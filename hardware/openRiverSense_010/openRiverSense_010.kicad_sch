@@ -1,0 +1,22 @@
+(kicad_sch (version 20230121) (generator eeschema)
+
+  (uuid 72916338-91dc-4a2e-8840-df5e33b00de4)
+
+  (paper "A4")
+
+  (title_block
+    (title "openRiverSense")
+    (date "2023-07-30")
+    (rev "0.1.0")
+    (company "Kea Studios")
+    (comment 1 "Chris Dirks")
+  )
+
+  (lib_symbols
+  )
+
+
+  (sheet_instances
+    (path "/" (page "1"))
+  )
+)
