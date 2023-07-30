@@ -1,0 +1,3 @@
+[submodule "prj-kicad-jlcpcb"]
+	path = hardware/openRiverSense_010/JLCPCB-Standard-Resitors-and-Caps
+	url = https://github.com/TomKeddie/prj-kicad-jlcpcb.git

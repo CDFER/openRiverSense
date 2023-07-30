@@ -1,0 +1,5 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "prj-kicad-jlcpcb")(type "KiCad")(uri "${KIPRJMOD}/JLCPCB Components/prj-kicad-jlcpcb/libraries")(options "")(descr ""))
+  (lib (name "footprint")(type "KiCad")(uri "${KIPRJMOD}/JLCPCB Components/footprint")(options "")(descr ""))
+)
