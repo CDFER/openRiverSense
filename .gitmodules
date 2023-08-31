@@ -1,3 +1,15 @@
-[submodule "prj-kicad-jlcpcb"]
-	path = hardware/openRiverSense_010/JLCPCB-Standard-Resitors-and-Caps
-	url = https://github.com/TomKeddie/prj-kicad-jlcpcb.git
+\[submodule "hardware/openRiverSense/JLCPCB-Kicad-Library"]
+	path = hardware/openRiverSense/JLCPCB-Kicad-Library
+	url = https://github.com/CDFER/JLCPCB-Kicad-Library.git
+[submodule "hardware/FeatherWing Battery Doubler/JLCPCB-Kicad-Library"]
+	path = hardware/FeatherWing Battery Doubler/JLCPCB-Kicad-Library
+	url = https://github.com/CDFER/JLCPCB-Kicad-Library.git
+[submodule "hardware/ESP32-S2 ULP UI Feather/JLCPCB-Kicad-Library"]
+	path = hardware/ESP32-S2 ULP UI Feather/JLCPCB-Kicad-Library
+	url = https://github.com/CDFER/JLCPCB-Kicad-Library.git
+[submodule "hardware/ATGM332D GPS Feather/JLCPCB-Kicad-Library"]
+	path = hardware/ATGM332D GPS Feather/JLCPCB-Kicad-Library
+	url = https://github.com/CDFER/JLCPCB-Kicad-Library.git
+[submodule "hardware/JLPCB Panel/JLCPCB-Kicad-Library"]
+	path = hardware/JLPCB Panel/JLCPCB-Kicad-Library
+	url = https://github.com/CDFER/JLCPCB-Kicad-Library.git

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--***************************************-->
+<!--   File    : openRiverSense.fsproj     -->
+<!--   Format  : TopoR Project file        -->
+<!--   Version : 2                         -->
+<!--   Program : TopoR Lite 7.0.18746      -->
+<!--   Date    : Saturday, August 26, 2023 -->
+<!--   Time    : 17:45                     -->
+<!--***************************************-->
+
+<Project>
+   <Version current="2"/>
+   <GUID>{DA5E9383-A2D0-4CF0-93C6-D2ED803AAAD9}</GUID>
+   <Documents>
+      <Section name="PCB" isExpanded="true">
+         <File path=".\ATGM332D GPS Feather.fsx" isopened="1" dateChange="2023-08-26 17:44:59"/>
+         <File path=".\openRiverSense_010.fsx" isopened="0" dateChange="2023-08-26 17:20:49"/>
+      </Section>
+      <Section name="AutoRouting" isExpanded="true"/>
+   </Documents>
+   <Import>
+      <Specctra>
+         <Path name="C:\Users\Taranaki\Documents\Github\openRiverSense\hardware\openRiverSense\openRiverSense_010.dsn"/>
+         <Path name="C:\Users\Taranaki\Documents\Github\openRiverSense\hardware\ATGM332D GPS Feather\ATGM332D GPS Feather.dsn"/>
+      </Specctra>
+   </Import>
+</Project>
