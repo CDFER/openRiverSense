@@ -1,4 +1,4 @@
-\[submodule "hardware/openRiverSense/JLCPCB-Kicad-Library"]
+[submodule "hardware/openRiverSense/JLCPCB-Kicad-Library"]
 	path = hardware/openRiverSense/JLCPCB-Kicad-Library
 	url = https://github.com/CDFER/JLCPCB-Kicad-Library.git
 [submodule "hardware/FeatherWing Battery Doubler/JLCPCB-Kicad-Library"]
