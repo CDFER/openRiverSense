@@ -94,6 +94,7 @@ double voltageToORP(int voltage_mV) {
  * @return The current date and time as a formatted string.
  */
 const char *getCurrentDateTime(const char *format) {
+	
 	static char dateTime[32];
 	time_t currentEpoch;
 	time(&currentEpoch);
@@ -111,9 +112,12 @@ static lv_obj_t *label3;
 static lv_obj_t *uiClock;
 static lv_obj_t *battery;
 
-const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";
 
 void setup() {
+	const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";
+	setenv("TZ", time_zone, 1);
+	tzset();
+
 	Serial.begin(115200);
 	if (dev.init("/fat", "ffat")) {
 		if (dev.begin()) {
@@ -127,19 +131,15 @@ void setup() {
 	USBSerial.product("Test device");
 	USBSerial.revision(100);
 	USBSerial.deviceID(0xdead, 0xbeef);
-	//USBSerial.registerDeviceCallbacks(new MyUSBSallnbacks());
+	// USBSerial.registerDeviceCallbacks(new MyUSBSallnbacks());
 
 	if (!USBSerial.begin())
 		Serial.println("Failed to start CDC USB device");
-		
 
 	pinMode(SPI_EN, OUTPUT);
 	digitalWrite(SPI_EN, HIGH);
 
-	pinMode(TFT_CS, OUTPUT);
-	digitalWrite(TFT_CS, HIGH);
-
-	screen.begin();
+	screen.init();
 	screen.setRotation(1);
 	screen.fillScreen(TFT_BLACK);
 
@@ -147,8 +147,7 @@ void setup() {
 	digitalWrite(BACKLIGHT, HIGH);
 
 	pinMode(OUTPUT_EN, OUTPUT);
-	digitalWrite(OUTPUT_EN, HIGH);
-	GPS_Serial.setRxBufferSize(2048);
+	//GPS_Serial.setRxBufferSize(2048);
 	GPS_Serial.begin(9600, SERIAL_8N1, JST_UART_RX, JST_UART_TX);
 
 	lv_init();
@@ -200,14 +199,17 @@ void setup() {
 
 	label3 = lv_label_create(cont_row);
 	lv_obj_align_to(label3, bar2, LV_ALIGN_OUT_TOP_MID, 0, -15); /*Align top of the slider*/
+
+	digitalWrite(OUTPUT_EN, HIGH);
 }
 
 void loop() {
 	while (GPS_Serial.available() > 0) {
 		gps.encode(GPS_Serial.read());
+		//USBSerial.write(GPS_Serial.read());
 	}
-	lv_label_set_text_fmt(uiClock, "%s", getCurrentDateTime("%H:%M:%S"));
-	// USBSerial.printf("%.6f %.6f\n", gps.location.lat(), gps.location.lng());
+	lv_label_set_text_fmt(uiClock, "%s", getCurrentDateTime("%H:%M"));
+	//USBSerial.printf("%.6f %.6f %i ", gps.location.lat(), gps.location.lng(), gps.satellites.value());
 	if (gps.time.isUpdated()) {
 		struct tm t_tm;
 		struct timeval val;
@@ -219,15 +221,13 @@ void loop() {
 		t_tm.tm_mon = gps.date.month() - 1;		// Month (starting from January, 0 for January) - Value range is [0,11]
 		t_tm.tm_mday = gps.date.day();
 
-		val.tv_sec = mktime(&t_tm) - _timezone;	 // make epoch from UTC/GMT even when system timezone already set
-		val.tv_usec = gps.time.centisecond() * 10000;
+		val.tv_sec = mktime(&t_tm);	 // make epoch from UTC/GMT even when system timezone already set
+		val.tv_usec = 0;
 
-		settimeofday(&val, NULL);  // set system epoch
-		setenv("TZ", time_zone, 1);
-		tzset();
+		settimeofday(&val, NULL);	// set system epoch
 	}
 
-	// USBSerial.printf("%s\n", getCurrentDateTime("%Y-%m-%d,%H:%M:%S"));
+	//USBSerial.printf("%s\n", getCurrentDateTime("%Y-%m-%d,%H:%M:%S"));
 
 	double tempC = voltageToTemperature(multiSampleADCmV(JST_IO_2_1, 1000));
 	double pH = voltageTopH(multiSampleADCmV(JST_IO_1_2, 10000));
@@ -243,5 +243,5 @@ void loop() {
 	lv_label_set_text_fmt(label3, "%0.1f °C", tempC);
 
 	lv_timer_handler(); /* let the GUI do its work */
-	delay(5);	
+	//delay(5);
 }
