@@ -1,25 +1,18 @@
 #include <Arduino.h>
-#include <TinyGPS++.h>
 #include <driver/adc.h>
 #include <esp_adc_cal.h>
-#include <tft_eSPI.h>
 
-#include "Roboto-Bold-24.h"
 #include "SD.h"
 #include "cdcusb.h"
 #include "flashdisk.h"
-#include "gpsOn.h"
+#include "gps.h"
+#include "gui.h"
 
 CDCusb USBSerial;
 FlashUSB dev;
 char *l1 = "ffat";
 
 #define ARDUINO_USB_MODE
-
-TinyGPSPlus gps;
-HardwareSerial GPS_Serial(1);
-
-TFT_eSPI screen;
 
 uint32_t multiSampleADCmV(uint8_t pin, uint16_t samples) {
 	esp_adc_cal_characteristics_t adc1_chars;
@@ -88,59 +81,58 @@ const char *getCurrentDateTime(const char *format) {
 	return dateTime;
 }
 
-TFT_eSprite topGui = TFT_eSprite(&screen);
-TFT_eSprite mainGui = TFT_eSprite(&screen);
-TFT_eSprite menuDraw = TFT_eSprite(&screen);
+/**
+ * @brief Calculate battery percentage based on voltage using a lookup table.
+ *
+ * Lookup table for battery voltage in millivolts and corresponding percentage (based on PANASONIC_NCR_18650_B).
+ * battery voltage 3300 = 3.3V, state of charge 22 = 22%.
+ */
+const uint16_t batteryDischargeCurve[2][12] = {
+	{0, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4200, 9999},
+	{0, 0, 13, 22, 39, 53, 62, 74, 84, 94, 100, 100}};
 
-void initScreen() {
-	pinMode(SPI_EN, OUTPUT);
-	digitalWrite(SPI_EN, HIGH);
+/**
+ * @brief Calculate battery percentage based on voltage.
+ *
+ * @param batteryMilliVolts The battery voltage in millivolts.
+ * @return The battery percentage as a null-terminated char array.
+ */
+const char *calculateBatteryPercentage(uint16_t batteryMilliVolts) {
+	static char batteryPercentage[5];  // Static array to hold the battery percentage
+	batteryPercentage[4] = '\0';	   // Null-terminate the array
 
-	screen.init();
-	screen.setRotation(2);
-	screen.fillScreen(TFT_BLACK);
+	// Determine the size of the lookup table
+	uint8_t tableSize = sizeof(batteryDischargeCurve[0]) / sizeof(batteryDischargeCurve[0][0]);
 
-	topGui.createSprite(200, 20);
-	topGui.loadFont(Roboto_Bold_24);
-	topGui.setTextColor(TFT_WHITE);
+	// Initialize the percentage variable
+	uint8_t percentage = 0;
 
-	//mainGui.createSprite(160, 240);
+	// Iterate through the lookup table to find the two lookup values we are between
+	for (uint8_t index = 0; index < tableSize - 1; index++) {
+		// Check if the battery voltage is within the current range
+		if (batteryMilliVolts <= batteryDischargeCurve[0][index + 1]) {
+			// Get the x and y values for interpolation
+			uint16_t x0 = batteryDischargeCurve[0][index];
+			uint16_t x1 = batteryDischargeCurve[0][index + 1];
+			uint8_t y0 = batteryDischargeCurve[1][index];
+			uint8_t y1 = batteryDischargeCurve[1][index + 1];
 
-	menuDraw.createSprite(240, 240);
-	menuDraw.loadFont(Roboto_Bold_24);
-	menuDraw.setTextColor(TFT_WHITE);
-	topGui.setTextDatum(TL_DATUM);
+			// Perform linear interpolation to calculate the battery percentage
+			percentage = static_cast<uint8_t>(y0 + ((y1 - y0) * (batteryMilliVolts - x0)) / (x1 - x0));
+			break;
+		}
+	}
 
-	pinMode(BACKLIGHT, OUTPUT);
-	digitalWrite(BACKLIGHT, HIGH);
-}
+	// Convert the percentage to a char array
+	snprintf(batteryPercentage, sizeof(batteryPercentage), "%u%%", percentage);
 
-void drawScreen() {
-	topGui.setTextDatum(CL_DATUM);
-	topGui.drawString("10:45", 0, 10);
-	topGui.setTextDatum(CR_DATUM);
-	topGui.drawString("100%", 200, 10);
-	topGui.pushImage(110, 0, 20, 20, gpsOn);
-	//topGui.pushImage(110, 0, 20, 20, gpsOff);
-	topGui.pushSprite(20, 10);
-
-	menuDraw.fillRoundRect(0, 0, 240, 240, 40, TFT_DARKGREY);
-	menuDraw.drawWideLine(45, 20, 195, 20, 5, TFT_WHITE);
-	menuDraw.drawString("pH Calibration >", 20, 40);
-	menuDraw.drawString("pH Calibration >", 20, 80);
-	menuDraw.drawString("pH Calibration >", 20, 120);
-	//menuDraw.pushSprite(0, 40);
-	menuDraw.pushSprite(0, 240);
-
-	// mesurementCountGui.drawString("14", TFT_WIDTH / 4, TFT_WIDTH / 4);
-	// mesurementCountGui.drawLine(TFT_WIDTH / 4, TFT_WIDTH / 4 -21, TFT_WIDTH / 4, TFT_WIDTH / 4 + 21, TFT_WHITE);
-	// mesurementCountGui.pushSprite(TFT_WIDTH / 4, TFT_WIDTH / 4);
+	return batteryPercentage;
 }
 
 void setup() {
-	const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";
-	setenv("TZ", time_zone, 1);
-	tzset();
+	// const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";
+	// setenv("TZ", time_zone, 1);
+	// tzset();
 
 	Serial.begin(115200);
 	if (dev.init("/fat", "ffat")) {
@@ -150,57 +142,30 @@ void setup() {
 			log_e("LUN 1 failed");
 	}
 
-	USBSerial.manufacturer("espressif");
-	USBSerial.serial("1234-567890");
-	USBSerial.product("Test device");
-	USBSerial.revision(100);
+	// USBSerial.manufacturer("espressif");
+	// USBSerial.serial("1234-567890");
+	// USBSerial.product("Test device");
+	// USBSerial.revision(100);
 	USBSerial.deviceID(0xdead, 0xbeef);
 	// USBSerial.registerDeviceCallbacks(new MyUSBSallnbacks());
 
 	if (!USBSerial.begin())
 		Serial.println("Failed to start CDC USB device");
 
-	pinMode(OUTPUT_EN, OUTPUT);
-	// GPS_Serial.setRxBufferSize(2048);
-	GPS_Serial.begin(9600, SERIAL_8N1, JST_UART_RX, JST_UART_TX);
-
 	pinMode(WAKE_BUTTON, INPUT);
 	pinMode(UP_BUTTON, INPUT);
 	pinMode(DOWN_BUTTON, INPUT);
 
-	digitalWrite(OUTPUT_EN, HIGH);
-
 	initScreen();
+	initGPS();
 }
 
 void loop() {
-	while (GPS_Serial.available() > 0) {
-		gps.encode(GPS_Serial.read());
-		// USBSerial.write(GPS_Serial.read());
-	}
-	// USBSerial.printf("%.6f %.6f %i ", gps.location.lat(), gps.location.lng(), gps.satellites.value());
-	// if (gps.time.isUpdated()) {
-	// 	struct tm t_tm;
-	// 	struct timeval val;
-
-	// 	t_tm.tm_hour = gps.time.hour();
-	// 	t_tm.tm_min = gps.time.minute();
-	// 	t_tm.tm_sec = gps.time.second();
-	// 	t_tm.tm_year = gps.date.year() - 1900;	// Year, whose value starts from 1900
-	// 	t_tm.tm_mon = gps.date.month() - 1;		// Month (starting from January, 0 for January) - Value range is [0,11]
-	// 	t_tm.tm_mday = gps.date.day();
-
-	// 	val.tv_sec = mktime(&t_tm);	 // make epoch from UTC/GMT even when system timezone already set
-	// 	val.tv_usec = 0;
-
-	// 	settimeofday(&val, NULL);  // set system epoch
-	// }
-
-	// USBSerial.printf("%s\n", getCurrentDateTime("%Y-%m-%d,%H:%M:%S"));
-
 	double tempC = voltageToTemperature(multiSampleADCmV(JST_IO_2_1, 1000));
 	double pH = voltageTopH(multiSampleADCmV(JST_IO_1_2, 10000));
 	double orp = voltageToORP(multiSampleADCmV(JST_IO_1_2, 10000));
 
-	drawScreen();
+	drawTopGui(getCurrentDateTime("%H:%M"), gps.location.isValid(), calculateBatteryPercentage(4000));
+
+
 }
