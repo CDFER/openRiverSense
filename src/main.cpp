@@ -2,12 +2,13 @@
 #include <TinyGPS++.h>
 #include <driver/adc.h>
 #include <esp_adc_cal.h>
-#include <lvgl.h>
 #include <tft_eSPI.h>
 
+#include "Roboto-Bold-24.h"
 #include "SD.h"
 #include "cdcusb.h"
 #include "flashdisk.h"
+#include "gpsOn.h"
 
 CDCusb USBSerial;
 FlashUSB dev;
@@ -19,21 +20,6 @@ TinyGPSPlus gps;
 HardwareSerial GPS_Serial(1);
 
 TFT_eSPI screen;
-static lv_disp_draw_buf_t draw_buf;
-static lv_color_t buf[TFT_WIDTH * TFT_HEIGHT / 10];
-
-/* Display flushing */
-void my_disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p) {
-	uint32_t w = (area->x2 - area->x1 + 1);
-	uint32_t h = (area->y2 - area->y1 + 1);
-
-	screen.startWrite();
-	screen.setAddrWindow(area->x1, area->y1, w, h);
-	screen.pushColors((uint16_t *)&color_p->full, w * h, true);
-	screen.endWrite();
-
-	lv_disp_flush_ready(disp_drv);
-}
 
 uint32_t multiSampleADCmV(uint8_t pin, uint16_t samples) {
 	esp_adc_cal_characteristics_t adc1_chars;
@@ -94,7 +80,6 @@ double voltageToORP(int voltage_mV) {
  * @return The current date and time as a formatted string.
  */
 const char *getCurrentDateTime(const char *format) {
-	
 	static char dateTime[32];
 	time_t currentEpoch;
 	time(&currentEpoch);
@@ -103,15 +88,54 @@ const char *getCurrentDateTime(const char *format) {
 	return dateTime;
 }
 
-lv_obj_t *bar1;
-static lv_obj_t *label;
-lv_obj_t *bar2;
-static lv_obj_t *label2;
-lv_obj_t *bar3;
-static lv_obj_t *label3;
-static lv_obj_t *uiClock;
-static lv_obj_t *battery;
+TFT_eSprite topGui = TFT_eSprite(&screen);
+TFT_eSprite mainGui = TFT_eSprite(&screen);
+TFT_eSprite menuDraw = TFT_eSprite(&screen);
 
+void initScreen() {
+	pinMode(SPI_EN, OUTPUT);
+	digitalWrite(SPI_EN, HIGH);
+
+	screen.init();
+	screen.setRotation(2);
+	screen.fillScreen(TFT_BLACK);
+
+	topGui.createSprite(200, 20);
+	topGui.loadFont(Roboto_Bold_24);
+	topGui.setTextColor(TFT_WHITE);
+
+	//mainGui.createSprite(160, 240);
+
+	menuDraw.createSprite(240, 240);
+	menuDraw.loadFont(Roboto_Bold_24);
+	menuDraw.setTextColor(TFT_WHITE);
+	topGui.setTextDatum(TL_DATUM);
+
+	pinMode(BACKLIGHT, OUTPUT);
+	digitalWrite(BACKLIGHT, HIGH);
+}
+
+void drawScreen() {
+	topGui.setTextDatum(CL_DATUM);
+	topGui.drawString("10:45", 0, 10);
+	topGui.setTextDatum(CR_DATUM);
+	topGui.drawString("100%", 200, 10);
+	topGui.pushImage(110, 0, 20, 20, gpsOn);
+	//topGui.pushImage(110, 0, 20, 20, gpsOff);
+	topGui.pushSprite(20, 10);
+
+	menuDraw.fillRoundRect(0, 0, 240, 240, 40, TFT_DARKGREY);
+	menuDraw.drawWideLine(45, 20, 195, 20, 5, TFT_WHITE);
+	menuDraw.drawString("pH Calibration >", 20, 40);
+	menuDraw.drawString("pH Calibration >", 20, 80);
+	menuDraw.drawString("pH Calibration >", 20, 120);
+	//menuDraw.pushSprite(0, 40);
+	menuDraw.pushSprite(0, 240);
+
+	// mesurementCountGui.drawString("14", TFT_WIDTH / 4, TFT_WIDTH / 4);
+	// mesurementCountGui.drawLine(TFT_WIDTH / 4, TFT_WIDTH / 4 -21, TFT_WIDTH / 4, TFT_WIDTH / 4 + 21, TFT_WHITE);
+	// mesurementCountGui.pushSprite(TFT_WIDTH / 4, TFT_WIDTH / 4);
+}
 
 void setup() {
 	const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";
@@ -136,112 +160,47 @@ void setup() {
 	if (!USBSerial.begin())
 		Serial.println("Failed to start CDC USB device");
 
-	pinMode(SPI_EN, OUTPUT);
-	digitalWrite(SPI_EN, HIGH);
-
-	screen.init();
-	screen.setRotation(1);
-	screen.fillScreen(TFT_BLACK);
-
-	pinMode(BACKLIGHT, OUTPUT);
-	digitalWrite(BACKLIGHT, HIGH);
-
 	pinMode(OUTPUT_EN, OUTPUT);
-	//GPS_Serial.setRxBufferSize(2048);
+	// GPS_Serial.setRxBufferSize(2048);
 	GPS_Serial.begin(9600, SERIAL_8N1, JST_UART_RX, JST_UART_TX);
 
-	lv_init();
-	lv_disp_draw_buf_init(&draw_buf, buf, NULL, TFT_HEIGHT * TFT_WIDTH / 10);
-
-	/*Initialize the display*/
-	static lv_disp_drv_t disp_drv;
-	lv_disp_drv_init(&disp_drv);
-	/*Change the following line to your display resolution*/
-	disp_drv.hor_res = TFT_HEIGHT;
-	disp_drv.ver_res = TFT_WIDTH;
-	disp_drv.flush_cb = my_disp_flush;
-	disp_drv.draw_buf = &draw_buf;
-	lv_disp_drv_register(&disp_drv);
-
-	uiClock = lv_label_create(lv_scr_act());
-	lv_obj_align_to(uiClock, lv_scr_act(), LV_ALIGN_TOP_LEFT, 25, 0);
-
-	battery = lv_label_create(lv_scr_act());
-	lv_label_set_text(battery, "100%");
-	lv_obj_align_to(battery, lv_scr_act(), LV_ALIGN_TOP_RIGHT, -25, 0);
-
-	/*Create a container with ROW flex direction*/
-	lv_obj_t *cont_row = lv_obj_create(lv_scr_act());
-	lv_obj_set_size(cont_row, TFT_HEIGHT, TFT_WIDTH);
-	lv_obj_align(cont_row, LV_ALIGN_TOP_MID, 0, 20);
-	lv_obj_set_flex_flow(cont_row, LV_FLEX_FLOW_ROW_WRAP);
-
-	bar1 = lv_bar_create(cont_row);
-	lv_obj_set_size(bar1, 180, 20);
-	lv_bar_set_range(bar1, -400, 400);
-	lv_obj_center(bar1);
-
-	label = lv_label_create(cont_row);
-	lv_obj_align_to(label, bar1, LV_ALIGN_OUT_TOP_MID, 0, -15); /*Align top of the slider*/
-
-	bar2 = lv_bar_create(cont_row);
-	lv_obj_set_size(bar2, 180, 20);
-	lv_bar_set_range(bar2, 0, 14);
-	lv_obj_center(bar2);
-
-	label2 = lv_label_create(cont_row);
-	lv_obj_align_to(label2, bar2, LV_ALIGN_OUT_TOP_MID, 0, -15); /*Align top of the slider*/
-
-	bar3 = lv_bar_create(cont_row);
-	lv_obj_set_size(bar3, 180, 20);
-	lv_bar_set_range(bar3, -10, 30);
-	lv_obj_center(bar3);
-
-	label3 = lv_label_create(cont_row);
-	lv_obj_align_to(label3, bar2, LV_ALIGN_OUT_TOP_MID, 0, -15); /*Align top of the slider*/
+	pinMode(WAKE_BUTTON, INPUT);
+	pinMode(UP_BUTTON, INPUT);
+	pinMode(DOWN_BUTTON, INPUT);
 
 	digitalWrite(OUTPUT_EN, HIGH);
+
+	initScreen();
 }
 
 void loop() {
 	while (GPS_Serial.available() > 0) {
 		gps.encode(GPS_Serial.read());
-		//USBSerial.write(GPS_Serial.read());
+		// USBSerial.write(GPS_Serial.read());
 	}
-	lv_label_set_text_fmt(uiClock, "%s", getCurrentDateTime("%H:%M"));
-	//USBSerial.printf("%.6f %.6f %i ", gps.location.lat(), gps.location.lng(), gps.satellites.value());
-	if (gps.time.isUpdated()) {
-		struct tm t_tm;
-		struct timeval val;
+	// USBSerial.printf("%.6f %.6f %i ", gps.location.lat(), gps.location.lng(), gps.satellites.value());
+	// if (gps.time.isUpdated()) {
+	// 	struct tm t_tm;
+	// 	struct timeval val;
 
-		t_tm.tm_hour = gps.time.hour();
-		t_tm.tm_min = gps.time.minute();
-		t_tm.tm_sec = gps.time.second();
-		t_tm.tm_year = gps.date.year() - 1900;	// Year, whose value starts from 1900
-		t_tm.tm_mon = gps.date.month() - 1;		// Month (starting from January, 0 for January) - Value range is [0,11]
-		t_tm.tm_mday = gps.date.day();
+	// 	t_tm.tm_hour = gps.time.hour();
+	// 	t_tm.tm_min = gps.time.minute();
+	// 	t_tm.tm_sec = gps.time.second();
+	// 	t_tm.tm_year = gps.date.year() - 1900;	// Year, whose value starts from 1900
+	// 	t_tm.tm_mon = gps.date.month() - 1;		// Month (starting from January, 0 for January) - Value range is [0,11]
+	// 	t_tm.tm_mday = gps.date.day();
 
-		val.tv_sec = mktime(&t_tm);	 // make epoch from UTC/GMT even when system timezone already set
-		val.tv_usec = 0;
+	// 	val.tv_sec = mktime(&t_tm);	 // make epoch from UTC/GMT even when system timezone already set
+	// 	val.tv_usec = 0;
 
-		settimeofday(&val, NULL);	// set system epoch
-	}
+	// 	settimeofday(&val, NULL);  // set system epoch
+	// }
 
-	//USBSerial.printf("%s\n", getCurrentDateTime("%Y-%m-%d,%H:%M:%S"));
+	// USBSerial.printf("%s\n", getCurrentDateTime("%Y-%m-%d,%H:%M:%S"));
 
 	double tempC = voltageToTemperature(multiSampleADCmV(JST_IO_2_1, 1000));
 	double pH = voltageTopH(multiSampleADCmV(JST_IO_1_2, 10000));
 	double orp = voltageToORP(multiSampleADCmV(JST_IO_1_2, 10000));
 
-	lv_bar_set_value(bar1, orp, LV_ANIM_ON);
-	lv_label_set_text_fmt(label, "%0.0fmV", orp);
-
-	lv_bar_set_value(bar2, pH, LV_ANIM_ON);
-	lv_label_set_text_fmt(label2, "%0.1f pH", pH);
-
-	lv_bar_set_value(bar3, tempC, LV_ANIM_ON);
-	lv_label_set_text_fmt(label3, "%0.1f °C", tempC);
-
-	lv_timer_handler(); /* let the GUI do its work */
-	//delay(5);
+	drawScreen();
 }

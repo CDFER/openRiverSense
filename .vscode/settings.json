@@ -19,6 +19,7 @@
         "istream": "cpp",
         "numeric": "cpp",
         "ostream": "cpp",
-        "utility": "cpp"
+        "utility": "cpp",
+        "cstddef": "cpp"
     }
 }
