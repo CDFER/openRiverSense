@@ -20,6 +20,10 @@
         "numeric": "cpp",
         "ostream": "cpp",
         "utility": "cpp",
-        "cstddef": "cpp"
+        "cstddef": "cpp",
+        "deque": "cpp",
+        "vector": "cpp",
+        "string_view": "cpp",
+        "streambuf": "cpp"
     }
 }
