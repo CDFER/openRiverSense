@@ -3,16 +3,18 @@
 TinyGPSPlus gps;
 HardwareSerial GPS_Serial(1);
 
-const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";
+const char* time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";
 
 void IRAM_ATTR gpsISR() {
 	// This is a callback function that will be activated on UART RX events
 	while (GPS_Serial.available() > 0) {
-		gps.encode(GPS_Serial.read());
+		char x = GPS_Serial.read();
+		Serial.write(x);
+		gps.encode(x);
 	}
 }
 
-void gpsTask(void *parameter) {
+void gpsTask(void* parameter) {
 	setenv("TZ", time_zone, 1);
 	tzset();
 
@@ -54,11 +56,37 @@ void gpsTask(void *parameter) {
  * @param format The desired format of the date and time string.
  * @return The current date and time as a formatted string.
  */
-const char *getCurrentDateTime(const char *format) {
+const char* getCurrentDateTime(const char* format) {
 	static char dateTime[32];
 	time_t currentEpoch;
 	time(&currentEpoch);
-	struct tm *timeInfo = localtime(&currentEpoch);
+	struct tm* timeInfo = localtime(&currentEpoch);
 	strftime(dateTime, sizeof(dateTime), format, timeInfo);
 	return dateTime;
+}
+
+void gpsLowPowerSync(uint32_t onTimeAfterFix, uint32_t onTimeMax) {
+	extern uint32_t multiSampleADCmV(uint8_t pin, uint16_t samples);
+	xTaskCreate(gpsTask, "gpsTask", 10000, NULL, 2, NULL);
+
+	while (gps.fixQuality() < 1 && millis() < (onTimeMax * 1000)) {
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+	}
+
+	uint32_t battery = (multiSampleADCmV(VBAT_SENSE, 1000) * VBAT_SENSE_SCALE);
+
+	FFat.begin(true);
+	File file = FFat.open("/gpslog.csv", FILE_APPEND, true);
+	file.printf("%s,TTFF,%i,bat,%i\n", getCurrentDateTime("%Y-%m-%d %H:%M"), millis() / 1000, battery);
+	ESP_LOGI("", "%s TTFF = %is Battery = %imV", getCurrentDateTime("%Y-%m-%d %H:%M"), millis() / 1000, battery);
+	file.close();
+
+
+	vTaskDelay(onTimeAfterFix * 1000 / portTICK_PERIOD_MS);
+
+	for (size_t i = 0; i < gps.satellitesTracked.value(); i++) {
+		if (gps.trackedSatellites[i].strength > 0) {
+			Serial.printf("%i,	%idb,	%i°,	%i°\n", gps.trackedSatellites[i].prn, gps.trackedSatellites[i].strength, gps.trackedSatellites[i].elevation, gps.trackedSatellites[i].azimuth);
+		}
+	}
 }

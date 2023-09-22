@@ -25,9 +25,9 @@ struct Button {
 	bool volatile pressed;
 };
 
-Button wakeButton = {WAKE_BUTTON, false};
-Button upButton = {UP_BUTTON, false};
-Button downButton = {DOWN_BUTTON, false};
+Button wakeButton = { WAKE_BUTTON, false };
+Button upButton = { UP_BUTTON, false };
+Button downButton = { DOWN_BUTTON, false };
 
 void IRAM_ATTR buttonISR() {
 	wakeButton.pressed = digitalRead(wakeButton.PIN);
@@ -36,7 +36,7 @@ void IRAM_ATTR buttonISR() {
 }
 
 class MyRenderer : public MenuComponentRenderer {
-   public:
+public:
 	void render(Menu const& menu) const {
 		menuBuffer.fillSprite(TFT_BLACK);
 
@@ -93,11 +93,14 @@ MyRenderer my_renderer;
 void on_item_selected(MenuComponent* p_menu_component);
 void on_measure(MenuComponent* p_menu_component);
 void on_gpsView(MenuComponent* p_menu_component);
+void on_satelliteView(MenuComponent* p_menu_component);
 void on_usbView(MenuComponent* p_menu_component);
+void on_sensorView(MenuComponent* p_menu_component);
 void drawTopGui(const char* localTime, bool locationFound, const char* batteryPercentage);
 void drawRecordingGui(float currentSeconds, float totalSeconds);
 void drawGPSGui();
 const char* calculateBatteryPercentage(uint16_t batteryMilliVolts);
+extern const char* getCurrentDateTime(const char* format);
 
 // Menu variables
 MenuSystem rootMenu(my_renderer);
@@ -117,7 +120,9 @@ BackMenuItem back2("Back", "\ue5c4", NULL, &rootMenu);
 
 Menu debugMenu("Debug", "\ueb8e");
 MenuItem gpsView("GPS", "\ue0c8", &on_gpsView);
+MenuItem satelliteView("Satellites", "\ue0c8", &on_satelliteView);
 MenuItem usbView("USB", "\ue1e0", &on_usbView);
+MenuItem sensorView("Sensors", "\ue1e0", &on_sensorView);
 BackMenuItem back3("Back", "\ue5c4", NULL, &rootMenu);
 
 NumericMenuItem num("Float", "\ue3c9", nullptr, 1.0, 0.1, 10.0, 0.1);
@@ -142,10 +147,64 @@ void on_measure(MenuComponent* p_menu_component) {
 }
 
 void on_gpsView(MenuComponent* p_menu_component) {
-	menuBuffer.loadFont(Roboto_Bold_24);
-	menuBuffer.setTextDatum(TL_DATUM);
+	menuBuffer.unloadFont();
+	menuBuffer.setTextFont(2);
 	do {
 		drawGPSGui();
+		menuBuffer.pushSprite(20, 50);
+		vTaskDelay(30 / portTICK_PERIOD_MS);
+	} while (!wakeButton.pressed);
+	wakeButton.pressed = false;
+}
+
+void on_sensorView(MenuComponent* p_menu_component) {
+	extern uint32_t multiSampleADCmV(uint8_t pin, uint16_t samples);
+	extern double voltageToTemperature(int voltage_mV);
+	extern double voltageTopH(int voltage_mV);
+	extern double voltageToORP(int voltage_mV);
+
+
+	menuBuffer.loadFont(Roboto_Bold_24);
+
+	do {
+		double tempC = voltageToTemperature(multiSampleADCmV(JST_IO_2_2, 1000));
+		double pH = voltageTopH(multiSampleADCmV(JST_IO_1_2, 10000));
+		double orp = voltageToORP(multiSampleADCmV(JST_IO_1_2, 10000));
+
+		menuBuffer.fillSprite(TFT_BLACK);
+		menuBuffer.setCursor(0, 0);
+
+		menuBuffer.printf("pH	= %.2f\n", pH);
+		menuBuffer.printf("ORP	= %.0fmV\n", orp);
+		menuBuffer.printf("Temp	= %.1f°C\n", tempC);
+
+		menuBuffer.pushSprite(20, 50);
+		vTaskDelay(30 / portTICK_PERIOD_MS);
+	} while (!wakeButton.pressed);
+	wakeButton.pressed = false;
+}
+
+void on_satelliteView(MenuComponent* p_menu_component) {
+#define SIZE 200
+#define X_POS 0
+#define Y_POS 0
+#define CENTRE_X (SIZE / 2) + X_POS
+#define CENTRE_Y (SIZE / 2) + Y_POS
+
+	menuBuffer.fillSprite(TFT_BLACK);
+	menuBuffer.drawSmoothCircle(CENTRE_X, CENTRE_Y, SIZE / 2, TFT_WHITE, TFT_BLACK);
+	menuBuffer.drawFastHLine(X_POS, CENTRE_Y, SIZE, TFT_WHITE);
+	menuBuffer.drawFastVLine(CENTRE_X, Y_POS, SIZE, TFT_WHITE);
+
+	do {
+		for (size_t i = 0; i < gps.satellitesTracked.value(); i++) {
+			double radians = (gps.trackedSatellites[i].azimuth) / 57.2957795;
+			double radius = ((90 - gps.trackedSatellites[i].elevation) / 90.0) * (SIZE / 2.0);
+			int32_t xVal = int32_t(radius * sin(radians));
+			int32_t yVal = -int32_t(radius * cos(radians));
+
+			menuBuffer.fillCircle(CENTRE_X + xVal, CENTRE_Y + yVal, 2, menuBuffer.color565(map(gps.trackedSatellites[i].strength, 50, 0, 0, 255), map(gps.trackedSatellites[i].strength, 0, 50, 0, 255), 0));
+		}
 		menuBuffer.pushSprite(20, 50);
 		vTaskDelay(30 / portTICK_PERIOD_MS);
 	} while (!wakeButton.pressed);
@@ -212,12 +271,19 @@ void guiTask(void* parameter) {
 
 	rootMenu.get_root_menu().add_menu(&debugMenu);
 	debugMenu.add_item(&gpsView);
+	debugMenu.add_item(&satelliteView);
 	debugMenu.add_item(&usbView);
+	debugMenu.add_item(&sensorView);
 	debugMenu.add_item(&back3);
 
-	// rootMenu.get_root_menu().add_item(&num);
-	// rootMenu.get_root_menu().add_item(&gpsView);
-
+	rootMenu.display();
+	rootMenu.next();
+	rootMenu.display();
+	rootMenu.next();
+	rootMenu.display();
+	rootMenu.next();
+	rootMenu.display();
+	rootMenu.select();
 	rootMenu.display();
 
 	pinMode(BACKLIGHT, OUTPUT);
@@ -231,6 +297,7 @@ void guiTask(void* parameter) {
 	attachInterrupt(DOWN_BUTTON, buttonISR, CHANGE);
 
 	while (true) {
+		drawTopGui(getCurrentDateTime("%H:%M"), gps.location.isValid(), calculateBatteryPercentage((multiSampleADCmV(VBAT_SENSE, 100) * VBAT_SENSE_SCALE)));
 		for (size_t i = 0; i < 100; i++) {
 			if (upButton.pressed) {
 				upButton.pressed = false;
@@ -251,10 +318,8 @@ void guiTask(void* parameter) {
 			}
 			vTaskDelay(10 / portTICK_PERIOD_MS);
 		}
-		drawTopGui(getCurrentDateTime("%H:%M"), gps.location.isValid(), calculateBatteryPercentage((multiSampleADCmV(VBAT_SENSE, 100) * VBAT_SENSE_SCALE)));
 	}
 }
-//(multiSampleADCmV(VBAT_SENSE, 100) * VBAT_SENSE_SCALE)
 
 void drawTopGui(const char* localTime, bool locationFound, const char* batteryPercentage) {
 	topGui.fillSprite(TFT_BLACK);
@@ -264,7 +329,8 @@ void drawTopGui(const char* localTime, bool locationFound, const char* batteryPe
 	topGui.drawString(batteryPercentage, 200, 10);
 	if (locationFound) {
 		topGui.pushImage(110, 0, 20, 20, gpsOn);
-	} else {
+	}
+	else {
 		topGui.pushImage(110, 0, 20, 20, gpsOff);
 	}
 
@@ -285,33 +351,26 @@ void drawGPSGui() {
 	if (gps.location.isValid()) {
 		if (averageHDOP == 0.0) {
 			averageHDOP = gps.hdop.hdop();
-		} else {
+		}
+		else {
 			averageHDOP = (averageHDOP * 0.9999) + (gps.hdop.hdop() * 0.0001);
 		}
 
 		if (averageSats == 0.0) {
 			averageSats = double(gps.satellites.value());
-		} else {
+		}
+		else {
 			averageSats = (averageSats * 0.9999) + (double(gps.satellites.value()) * 0.0001);
 		}
 	}
 
 	menuBuffer.fillSprite(TFT_BLACK);
 	menuBuffer.setCursor(0, 0);
-	menuBuffer.printf("%02d-%02d-%02d %02d:%02d\n", gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute());
-	menuBuffer.println(getCurrentDateTime("%Y-%m-%d %H:%M"));
-	menuBuffer.printf("Lat = %0.6f\n", gps.location.lat());
-	menuBuffer.printf("Lng = %0.6f\n", gps.location.lng());
-	menuBuffer.printf("Altitude = %0.1fm\n", gps.altitude.meters());
+	menuBuffer.printf("UTC: %02d-%02d-%02d %02d:%02d\n", gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute());
+	menuBuffer.printf("NZST: %s\n", getCurrentDateTime("%Y-%m-%d %H:%M"));
+	menuBuffer.printf("%0.6f, %0.6f\n", gps.location.lat(), gps.location.lng());
 	menuBuffer.printf("HDOP %0.1f AV %0.1f\n", gps.hdop.hdop(), averageHDOP);
-	menuBuffer.printf("Sats %i AV %0.1f\n", gps.satellites.value(), averageSats);
 	menuBuffer.printf("Chars: %i\n", gps.charsProcessed());
-
-	// if (gps.location.isUpdated()) {
-	// 	double xPos = (gps.location.lat() - -36.89851281106787) * 300000;
-	// 	double yPos = (gps.location.lng() - 174.8193460011448) * 300000;
-	// 	screen.fillSmoothCircle(xPos + 120, yPos + 160, 1, TFT_WHITE);
-	// }
 }
 
 /**
@@ -326,7 +385,7 @@ const char* calculateBatteryPercentage(uint16_t batteryMilliVolts) {
 
 	const uint16_t batteryDischargeCurve[2][12] = {
 		{0, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4200, 9999},
-		{0, 0, 13, 22, 39, 53, 64, 78, 92, 100, 100, 100}};
+		{0, 0, 13, 22, 39, 53, 64, 78, 92, 100, 100, 100} };
 
 	// Determine the size of the lookup table
 	uint8_t tableSize = sizeof(batteryDischargeCurve[0]) / sizeof(batteryDischargeCurve[0][0]);

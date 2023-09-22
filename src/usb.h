@@ -1,7 +1,4 @@
-#include <FFat.h>
-#include <FS.h>
 
-#include "SD.h"
 #include "cdcusb.h"
 #include "esp32s2/rom/rtc.h"
 #include "flashdisk.h"
@@ -39,38 +36,32 @@ class myUSBSerialCallbacks : public CDCCallbacks {
 
 const char *returnResetText(int reason) {
 	switch (reason) {
-		case 1:
+		case POWERON_RESET:
 			return "Vbat power on reset";
-		case 3:
+		case RTC_SW_SYS_RESET:
 			return "Software reset digital core";
-		case 4:
-			return "Legacy watch dog reset digital core";
-		case 5:
+		case DEEPSLEEP_RESET:
 			return "Deep Sleep reset digital core";
-		case 6:
-			return "Reset by SLC module, reset digital core";
-		case 7:
+		case TG0WDT_SYS_RESET:
 			return "Timer Group0 Watch dog reset digital core";
-		case 8:
+		case TG1WDT_SYS_RESET:
 			return "Timer Group1 Watch dog reset digital core";
-		case 9:
+		case RTCWDT_SYS_RESET:
 			return "RTC Watch dog Reset digital core";
-		case 10:
+		case INTRUSION_RESET:
 			return "Instrusion tested to reset CPU";
-		case 11:
+		case TG0WDT_CPU_RESET:
 			return "Time Group reset CPU";
-		case 12:
+		case RTC_SW_CPU_RESET:
 			return "Software reset CPU";
-		case 13:
+		case RTCWDT_CPU_RESET:
 			return "RTC Watch dog Reset CPU";
-		case 14:
-			return "for APP CPU, reseted by PRO CPU";
-		case 15:
+		case RTCWDT_BROWN_OUT_RESET:
 			return "Reset when the vdd voltage is not stable";
-		case 16:
+		case RTCWDT_RTC_RESET:
 			return "RTC Watch dog reset digital core and rtc module";
 		default:
-			return "Unkown";
+			return "Unknown Reset";
 	}
 }
 
@@ -81,19 +72,16 @@ void usbTask(void *parameter) {
 	USBSerial.registerDeviceCallbacks(new myUSBCallbacks());
 	USBSerial.setCallbacks(new myUSBSerialCallbacks());
 
-	USBDrive.init();
+	FFat.begin(true);
+
+	USBDrive.init("/ffat", "ffat");
 	USBSerial.begin();
 	USBDrive.begin();
 	usbSerialActive = true;
-	// FFat.begin();
 
-	// File file = FFat.open("/log.txt", FILE_APPEND, true);
-	// file.printf("%s,%imV,boot\n", getCurrentDateTime("%Y-%m-%d,%H:%M"), multiSampleADCmV(VBAT_SENSE, 100) * VBAT_SENSE_SCALE);
-	// file.close();
-
-	// File file = FFat.open("/log.txt", FILE_APPEND, true);
-	// 		file.printf("%s,setTime,%imV,", getCurrentDateTime("%Y-%m-%d,%H:%M"), multiSampleADCmV(VBAT_SENSE, 100) * VBAT_SENSE_SCALE);
-	// 		file.close();
+	File file = FFat.open("/log.txt", FILE_APPEND, true);
+	file.println("xxx");
+	file.close();
 
 	vTaskDelete(NULL);
 }
