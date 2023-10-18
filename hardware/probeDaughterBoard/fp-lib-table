@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "footprint")(type "KiCad")(uri "C:/Users/Taranaki/Documents/Github/openRiverSense/hardware/openRiverSense/JLCPCB-Kicad-Library/footprint")(options "")(descr ""))
+)

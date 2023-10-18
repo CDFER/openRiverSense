@@ -26,5 +26,11 @@
         "string_view": "cpp",
         "streambuf": "cpp"
     },
-    "C_Cpp.clang_format_fallbackStyle": "{ BasedOnStyle: LLVM, UseTab: Allways, IndentWidth: 4, TabWidth: 4, BreakBeforeBraces: Attach, IndentPPDirectives: BeforeHash, AllowShortIfStatementsOnASingleLine: true, AllowShortFunctionsOnASingleLine: true, IndentCaseLabels: false, ColumnLimit: 128, AccessModifierOffset: -4 }"
+    "C_Cpp.clang_format_fallbackStyle": "{ BasedOnStyle: LLVM, UseTab: Always, IndentWidth: 4, TabWidth: 4, BreakBeforeBraces: Attach, IndentPPDirectives: BeforeHash, AllowShortIfStatementsOnASingleLine: true, AllowShortFunctionsOnASingleLine: true, IndentCaseLabels: false, ColumnLimit: 128, AccessModifierOffset: -4 }",
+    "cSpell.words": [
+        "Datasheet",
+        "kicad",
+        "LCSC",
+        "polyline"
+    ]
 }
