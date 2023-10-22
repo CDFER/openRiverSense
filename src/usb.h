@@ -3,19 +3,19 @@
 #include "SPI.h"
 #include "SdFat.h"
 
+// file system object from SdFat
+FatVolume fatfs;
+
 // ESP32 use same flash device that store code.
 // Therefore there is no need to specify the SPI and SS
 Adafruit_FlashTransport_ESP32 flashTransport;
 Adafruit_SPIFlash flash(&flashTransport);
 
-// file system object from SdFat
-FatVolume fatfs;
-
 // USB Mass Storage object
 Adafruit_USBD_MSC usb_msc;
 
-bool fs_formatted; // Check if flash is formatted
-bool fs_changed;   // Set to true when write to flash
+bool fileSystemActive; // Check if flash is formatted and ready to use
+bool fs_changed;	   // Set to true when write to flash
 
 // Callback invoked when received READ10 command.
 // Copy disk's data to buffer (up to bufsize) and
@@ -54,7 +54,9 @@ bool msc_ready_callback(void) {
 	return ret;
 }
 
-void setupMassStorage(void) {
+void refreshMassStorage(void) { fs_changed = true; }
+
+void usbTask(void *parameter) {
 	flash.begin();
 
 	// Set disk vendor id, product id and revision with string up to 8, 16, 4 characters respectively
@@ -71,24 +73,19 @@ void setupMassStorage(void) {
 	usb_msc.setReadyCallback(0, msc_ready_callback);
 
 	// Init file system on the flash
-	fs_formatted = fatfs.begin(&flash);
+	fileSystemActive = fatfs.begin(&flash);
 
 	usb_msc.begin();
-}
 
-void usbTask(void *parameter) {
-	setupMassStorage();
-
-	//  while ( !DBG_SERIAL ) delay(10);   // wait for native usb
-	Serial.println("TinyUSB Mass Storage");
-	Serial.print("JEDEC ID: 0x");
-	Serial.println(flash.getJEDECID(), HEX);
-	Serial.print("Flash size: ");
-	Serial.print(flash.size() / 1024);
-	Serial.println(" KB");
-	if (!fs_formatted) {
-		Serial.println("Failed to init files system, flash may not be formatted");
+	// while (!Serial)
+	// 	delay(10); // wait for native usb
+	// Serial.print("JEDEC ID: 0x");
+	// Serial.println(flash.getJEDECID(), HEX);
+	// Serial.print("Flash size: ");
+	// Serial.print(flash.size() / 1024);
+	// Serial.println(" KB");
+	if (!fileSystemActive) {
+		ESP_LOGE("FATFS", "Failed to init");
 	}
-
 	vTaskDelete(NULL);
 }

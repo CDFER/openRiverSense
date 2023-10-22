@@ -6,7 +6,6 @@ HardwareSerial GPS_Serial(1);
 const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";
 
 void IRAM_ATTR gpsISR() {
-	// This is a callback function that will be activated on UART RX events
 	while (GPS_Serial.available() > 0) {
 		char x = GPS_Serial.read();
 		// Serial.write(x);
@@ -18,15 +17,18 @@ void gpsTask(void *parameter) {
 	setenv("TZ", time_zone, 1);
 	tzset();
 
-	pinMode(OUTPUT_EN, OUTPUT);
 	GPS_Serial.onReceive(gpsISR);
 	GPS_Serial.begin(9600, SERIAL_8N1, JST_UART_RX, JST_UART_TX);
-	GPS_Serial.setRxFIFOFull(64);
-	digitalWrite(OUTPUT_EN, HIGH);
+	vTaskDelay(250 / portTICK_PERIOD_MS);
+	GPS_Serial.write("$PCAS01,5*19\r\n"); // set to 115200 baud
+	GPS_Serial.flush();
+	GPS_Serial.updateBaudRate(115200);
+	// vTaskDelay(250 / portTICK_PERIOD_MS);
+	// GPS_Serial.write("$PCAS02,100*1E\r\n"); // set to 10 HZ
+	// GPS_Serial.flush();
 
 	while (gps.date.year() < 2022 || !gps.date.isValid() || !gps.time.isValid()) {
 		vTaskDelay(100 / portTICK_PERIOD_MS);
-		// Serial.println("gps");
 	}
 
 	struct tm t_tm;

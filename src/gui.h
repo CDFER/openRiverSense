@@ -8,15 +8,19 @@
 #include "gpsOff.h"
 #include "gpsOn.h"
 
+RTC_DATA_ATTR static char batteryText[6] = "100%";
+
 TFT_eSPI screen;
 TFT_eSprite topGui = TFT_eSprite(&screen);
 TFT_eSprite menuBuffer = TFT_eSprite(&screen); //~40kb in size
 
 uint8_t menuIndex;
+bool buttonPressed = false;
 
 #define MENU_WIDTH 240
 #define MENU_HIEGHT 200
 #define MENU_ITEM_HIEGHT 48
+#define BACKLIGHT_BRIGHTNESS 32
 
 struct Button {
 	const uint8_t PIN;
@@ -28,6 +32,7 @@ Button upButton = {UP_BUTTON, false};
 Button downButton = {DOWN_BUTTON, false};
 
 void IRAM_ATTR buttonISR() {
+	buttonPressed = true;
 	wakeButton.pressed = digitalRead(wakeButton.PIN);
 	upButton.pressed = digitalRead(upButton.PIN);
 	downButton.pressed = digitalRead(downButton.PIN);
@@ -90,11 +95,9 @@ void on_gpsView(MenuComponent *p_menu_component);
 void on_satelliteView(MenuComponent *p_menu_component);
 void on_usbView(MenuComponent *p_menu_component);
 void on_sensorView(MenuComponent *p_menu_component);
-void drawTopGui(const char *localTime, bool locationFound, const char *batteryPercentage);
+void drawTopGui();
 void drawRecordingGui(float currentSeconds, float totalSeconds);
 void drawGPSGui();
-const char *calculateBatteryPercentage(uint16_t batteryMilliVolts);
-extern const char *getCurrentDateTime(const char *format);
 
 // Menu variables
 MenuSystem rootMenu(my_renderer);
@@ -144,6 +147,7 @@ void on_gpsView(MenuComponent *p_menu_component) {
 	do {
 		drawGPSGui();
 		menuBuffer.pushSprite(20, 40);
+		drawTopGui();
 		vTaskDelay(30 / portTICK_PERIOD_MS);
 	} while (!wakeButton.pressed);
 	wakeButton.pressed = false;
@@ -157,6 +161,7 @@ void on_sensorView(MenuComponent *p_menu_component) {
 		menuBuffer.setCursor(0, 0);
 
 		menuBuffer.pushSprite(20, 40);
+		drawTopGui();
 		vTaskDelay(100 / portTICK_PERIOD_MS);
 	} while (!wakeButton.pressed);
 	wakeButton.pressed = false;
@@ -186,6 +191,7 @@ void on_satelliteView(MenuComponent *p_menu_component) {
 													  map(gps.trackedSatellites[i].strength, 0, 50, 0, 255), 0));
 		}
 		menuBuffer.pushSprite(20, 40);
+		drawTopGui();
 		vTaskDelay(30 / portTICK_PERIOD_MS);
 	} while (!wakeButton.pressed);
 	wakeButton.pressed = false;
@@ -233,7 +239,7 @@ void guiTask(void *parameter) {
 
 	pinMode(BACKLIGHT, OUTPUT);
 	analogWriteFrequency(40000);
-	analogWrite(BACKLIGHT, 32);
+	analogWrite(BACKLIGHT, BACKLIGHT_BRIGHTNESS);
 
 	pinMode(WAKE_BUTTON, INPUT);
 	pinMode(UP_BUTTON, INPUT);
@@ -243,7 +249,7 @@ void guiTask(void *parameter) {
 	attachInterrupt(DOWN_BUTTON, buttonISR, CHANGE);
 
 	while (true) {
-		drawTopGui(getCurrentDateTime("%H:%M"), gps.location.isValid(), calculateBatteryPercentage(3300));
+		drawTopGui();
 		for (size_t i = 0; i < 100; i++) {
 			if (upButton.pressed) {
 				upButton.pressed = false;
@@ -267,13 +273,22 @@ void guiTask(void *parameter) {
 	}
 }
 
-void drawTopGui(const char *localTime, bool locationFound, const char *batteryPercentage) {
+void drawTopGui() {
+
 	topGui.fillSprite(TFT_BLACK);
 	topGui.setTextDatum(CL_DATUM);
-	topGui.drawString(localTime, 0, 10);
+
+	static char timeText[7];
+	time_t currentEpoch;
+	time(&currentEpoch);
+	struct tm *timeInfo = localtime(&currentEpoch);
+	strftime(timeText, sizeof(timeText), "%H:%M", timeInfo);
+
+	topGui.drawString(timeText, 0, 10);
 	topGui.setTextDatum(CR_DATUM);
-	topGui.drawString(batteryPercentage, 200, 10);
-	if (locationFound) {
+
+	topGui.drawString(batteryText, 200, 10);
+	if (gps.location.isValid()) {
 		topGui.pushImage(110, 0, 20, 20, gpsOn);
 	} else {
 		topGui.pushImage(110, 0, 20, 20, gpsOff);
@@ -296,51 +311,11 @@ void drawRecordingGui(float currentSeconds, float totalSeconds) {
 void drawGPSGui() {
 	menuBuffer.fillSprite(TFT_BLACK);
 	menuBuffer.setCursor(0, 0);
-	menuBuffer.printf("UTC: %02d-%02d-%02d %02d:%02d\n", gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(),
+	menuBuffer.printf("%02d-%02d-%02d %02d:%02d\n", gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(),
 					  gps.time.minute());
-	menuBuffer.printf("NZST: %s\n", getCurrentDateTime("%Y-%m-%d %H:%M"));
 	menuBuffer.printf("%0.6f, %0.6f\n", gps.location.lat(), gps.location.lng());
 	menuBuffer.printf("HDOP %0.1f\n", gps.hdop.hdop());
+	menuBuffer.printf("Tracked %i\n", gps.satellitesTracked.value());
+	menuBuffer.printf("Visible %i\n", gps.satellites.value());
 	menuBuffer.printf("Chars: %i\n", gps.charsProcessed());
-}
-
-/**
- * @brief Calculate battery percentage based on voltage.
- *
- * @param batteryMilliVolts The battery voltage in millivolts.
- * @return The battery percentage as a null-terminated char array.
- */
-const char *calculateBatteryPercentage(uint16_t batteryMilliVolts) {
-	static char batteryPercentage[5]; // Static array to hold the battery percentage
-	batteryPercentage[4] = '\0';	  // Null-terminate the array
-
-	const uint16_t batteryDischargeCurve[2][12] = {{0, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4200, 9999},
-												   {0, 0, 13, 22, 39, 53, 64, 78, 92, 100, 100, 100}};
-
-	// Determine the size of the lookup table
-	uint8_t tableSize = sizeof(batteryDischargeCurve[0]) / sizeof(batteryDischargeCurve[0][0]);
-
-	// Initialize the percentage variable
-	uint8_t percentage = 0;
-
-	// Iterate through the lookup table to find the two lookup values we are between
-	for (uint8_t index = 0; index < tableSize - 1; index++) {
-		// Check if the battery voltage is within the current range
-		if (batteryMilliVolts <= batteryDischargeCurve[0][index + 1]) {
-			// Get the x and y values for interpolation
-			uint16_t x0 = batteryDischargeCurve[0][index];
-			uint16_t x1 = batteryDischargeCurve[0][index + 1];
-			uint8_t y0 = batteryDischargeCurve[1][index];
-			uint8_t y1 = batteryDischargeCurve[1][index + 1];
-
-			// Perform linear interpolation to calculate the battery percentage
-			percentage = static_cast<uint8_t>(y0 + ((y1 - y0) * (batteryMilliVolts - x0)) / (x1 - x0));
-			break;
-		}
-	}
-
-	// Convert the percentage to a char array
-	snprintf(batteryPercentage, sizeof(batteryPercentage), "%u%%", percentage);
-
-	return batteryPercentage;
 }
