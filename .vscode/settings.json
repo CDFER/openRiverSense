@@ -29,6 +29,7 @@
     "C_Cpp.clang_format_fallbackStyle": "{ BasedOnStyle: LLVM, UseTab: Always, IndentWidth: 4, TabWidth: 4, BreakBeforeBraces: Attach, IndentPPDirectives: BeforeHash, AllowShortIfStatementsOnASingleLine: true, AllowShortFunctionsOnASingleLine: true, IndentCaseLabels: false, ColumnLimit: 128, AccessModifierOffset: -4 }",
     "cSpell.words": [
         "Datasheet",
+        "eeprom",
         "kicad",
         "LCSC",
         "polyline"

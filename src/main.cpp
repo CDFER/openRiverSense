@@ -1,6 +1,6 @@
-#include "driver/rtc_io.h"
 #include <Arduino.h>
 
+#include "driver/rtc_io.h"
 #include "gps.h"
 #include "gui.h"
 #include "passwords.h"
@@ -8,14 +8,16 @@
 #include "usb.h"
 
 #define SCREEN_ON_TIME 60 * 1
-#define GPS_ON_TIME_MAX 60 * 12
-#define GPS_DEEPSLEEP 60 * 10
+#define GPS_ON_TIME_MAX 60 * 5
+#define GPS_DEEPSLEEP 60 * 60
 
 #define WATCHDOG_TICK 1
 
 RTC_DATA_ATTR uint16_t batteryMilliVolts = 0;
 RTC_DATA_ATTR float batteryPercentage = 0.0;
 RTC_DATA_ATTR bool charging = false;
+
+volatile bool wakeToUI = false;
 
 int16_t watchDogCountdown = SCREEN_ON_TIME;
 
@@ -30,7 +32,7 @@ void enterDeepSleep(uint64_t deepSleepTime) {
 	esp_deep_sleep_start();
 }
 
-void IRAM_ATTR wakeToUI() { ESP.restart(); }
+void IRAM_ATTR wakeToUIISR() { wakeToUI = true; }
 
 void calculateBatteryPercentage() {
 	const uint16_t batteryCurve[3][12] = {{0, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4200, 9999},
@@ -118,7 +120,7 @@ void loop() {
 		ESP_LOGI("State Machine", "UI_MODE");
 
 		xTaskCreate(guiTask, "guiTask", 10000, NULL, 3, &guiHandle);
-		//  xTaskCreate(sensorTask, "sensorTask", 10000, NULL, 1, NULL);
+		xTaskCreate(sensorTask, "sensorTask", 10000, NULL, 1, NULL);
 
 		watchDogCountdown = SCREEN_ON_TIME;
 		while (watchDogCountdown > 0) {
@@ -136,20 +138,24 @@ void loop() {
 
 	case GPS_SYNC_MODE:
 		ESP_LOGI("State Machine", "GPS_SYNC_MODE");
-		// setCpuFrequencyMhz(80); // Lower Power Consumption
-		 attachInterrupt(WAKE_BUTTON, wakeToUI, HIGH);
-		 attachInterrupt(UP_BUTTON, wakeToUI, HIGH);
-		 attachInterrupt(DOWN_BUTTON, wakeToUI, HIGH);
-		 attachInterrupt(VUSB_MON, wakeToUI, HIGH);
+		attachInterrupt(WAKE_BUTTON, wakeToUIISR, HIGH);
+		attachInterrupt(UP_BUTTON, wakeToUIISR, HIGH);
+		attachInterrupt(DOWN_BUTTON, wakeToUIISR, HIGH);
+		attachInterrupt(VUSB_MON, wakeToUIISR, HIGH);
 		watchDogCountdown = GPS_ON_TIME_MAX;
 
-		while ((gps.hdop.hdop() > 1.0 || gps.sentencesWithFix() == 0) && watchDogCountdown > 0 && !buttonPressed) {
+		while ((gps.hdop.hdop() > 1.0 || gps.sentencesWithFix() == 0) && watchDogCountdown > 0 && !wakeToUI) {
 			vTaskDelay(10 / portTICK_PERIOD_MS);
 		}
 
-		if (buttonPressed) {
-			// setCpuFrequencyMhz(240);
+		if (wakeToUI) {
 			state = UI_MODE;
+			detachInterrupt(WAKE_BUTTON);
+			detachInterrupt(UP_BUTTON);
+			detachInterrupt(DOWN_BUTTON);
+			detachInterrupt(VUSB_MON);
+			wakeToUI = false;
+
 		} else {
 
 			ESP_LOGI("Adafruit IO", "Connecting...");
