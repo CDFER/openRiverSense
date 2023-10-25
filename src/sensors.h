@@ -77,28 +77,27 @@ CalibratedSensor pHSensor;
 
 void setupADC() {
 	adc.begin(WIRE_SDA, WIRE_SCL);
-	adc.setGain(2);
+	adc.setGain(4);
 	adc.setDataRate(0);
 
-	// disable comparator
-	adc.setComparatorThresholdHigh(0x8000);
+	// set the thresholds to that they don't trigger the interrupt pin
 	adc.setComparatorThresholdLow(0x0000);
+	adc.setComparatorThresholdHigh(0xFFFF);
 	adc.setComparatorQueConvert(0);
+	adc.setComparatorLatch(0);
 
-	pinMode(WIRE_INT, INPUT_PULLUP);
-	attachInterrupt(digitalPinToInterrupt(WIRE_INT), adcISR, RISING);
+	pinMode(WIRE_INT, INPUT);
+	attachInterrupt(digitalPinToInterrupt(WIRE_INT), adcISR, FALLING);
 
-	adc.setMode(0);			 // continuous mode
 	adc.readADC(adcChannel); // trigger first read
 }
 
 void fetchADC() {
 	if (adcReady) {
-		adcRaw[adcChannel] = adc.toVoltage(adc.getValue());
-		adcChannel++;
-		if (adcChannel >= 4) adcChannel = 0;
-		adc.readADC(adcChannel); // request next channel
+		adcRaw[adcChannel] = (0.1 * adc.toVoltage(adc.getValue()) * 1000) + (0.9 * adcRaw[adcChannel]);
+		adcChannel = (adcChannel + 1) % 4;
 		adcReady = false;
+		adc.readADC(adcChannel); // request next channel
 	}
 }
 
@@ -128,27 +127,31 @@ void fetchTemperature() {
 }
 
 void convertData() {
-	pH = 0.1 * (adcRaw[2] - adcRaw[0]) + 0.9 * pH;
-	orp = 0.1 * (adcRaw[2] - adcRaw[1]) + 0.9 * orp;
-	nitrate = 0.1 * (adcRaw[2] - adcRaw[3]) + 0.9 * nitrate;
-	temperature = 0.1 * (temperatureRaw) + 0.9 * temperature;
+	pH = adcRaw[2] - adcRaw[1];
+	orp = adcRaw[2] - adcRaw[0];
+	nitrate = adcRaw[2] - adcRaw[3];
+	temperature = temperatureRaw;
 
-	Serial.printf("pH = %0.1f, orp = %0.1f, nitrate = %0.1f, temperature = %0.2f\n", pH, orp, nitrate, temperature);
+	Serial.printf("pH = %0.1f,	orp = %0.1f,	nitrate = %0.1f,	temperature = %0.2f\n", pH, orp, nitrate, temperature);
 }
 
 void sensorTask(void *parameter) {
 	// setupEeprom();
-	// setupADC();
-	// setupTemperature();
+	setupADC();
+	setupTemperature();
 	while (true) {
-		// fetchADC();
-		// fetchTemperature();
-		// convertData();
+		for (size_t i = 0; i < 100; i++) {
+			fetchADC();
+			vTaskDelay(10 / portTICK_PERIOD_MS);
+		}
 
-		pHSensor.fitCurveFromPoints();
+		fetchTemperature();
+		convertData();
 
-		Serial.println(pHSensor.convertFromRaw(-5.0));
+		// pHSensor.fitCurveFromPoints();
 
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		// Serial.println(pHSensor.convertFromRaw(-5.0));
+
+		// vTaskDelay(100 / portTICK_PERIOD_MS);
 	}
 }

@@ -37,7 +37,7 @@ void IRAM_ATTR wakeToUIISR() { wakeToUI = true; }
 void calculateBatteryPercentage() {
 	const uint16_t batteryCurve[3][12] = {{0, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4200, 9999},
 										  {0, 0, 13, 22, 39, 53, 64, 78, 92, 99, 100, 100}, // discharge
-										  {0, 0, 0, 13, 22, 39, 53, 64, 78, 92, 100, 100}}; // charge
+										  {0, 0, 0, 13, 22, 39, 53, 64, 79, 94, 100, 100}}; // charge
 
 	// Determine the size of the lookup table
 	uint8_t tableSize = sizeof(batteryCurve[0]) / sizeof(batteryCurve[0][0]);

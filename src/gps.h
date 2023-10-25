@@ -23,9 +23,9 @@ void gpsTask(void *parameter) {
 	GPS_Serial.write("$PCAS01,5*19\r\n"); // set to 115200 baud
 	GPS_Serial.flush();
 	GPS_Serial.updateBaudRate(115200);
-	// vTaskDelay(250 / portTICK_PERIOD_MS);
-	// GPS_Serial.write("$PCAS02,100*1E\r\n"); // set to 10 HZ
-	// GPS_Serial.flush();
+	vTaskDelay(250 / portTICK_PERIOD_MS);
+	GPS_Serial.write("$PCAS02,500*1A\r\n"); // set to 2 HZ
+	GPS_Serial.flush();
 
 	while (gps.date.year() < 2022 || !gps.date.isValid() || !gps.time.isValid()) {
 		vTaskDelay(100 / portTICK_PERIOD_MS);
