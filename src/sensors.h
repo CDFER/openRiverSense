@@ -9,22 +9,20 @@
 I2C_eeprom eeprom(0x50, I2C_DEVICESIZE_24LC64);
 
 ADS1015 adc(0x48);
-volatile bool adcReady = false;
 uint8_t adcChannel = 0;
 float adcRaw[4] = {0, 0, 0, 0};
-void IRAM_ATTR adcISR() { adcReady = true; }
+float tdsRaw = 0.0;
 
 OneWire oneWireBus(ONEWIRE);
-DallasTemperature temperatureSensor(&oneWireBus);
-DeviceAddress tempDeviceAddress;
-uint8_t resolution = 12;
+DallasTemperature owTemp(&oneWireBus);
+DeviceAddress deviceAddress;
+#define TEMP_RESOLUTION 12
+#define TEMP_CONVERSION_MS 750 / (1 << (12 - TEMP_RESOLUTION))
 unsigned long lastTempRequest = 0;
-int delayInMillis = 0;
-float temperatureRaw = 0;
 
 float pH = 0.0;			 // 0 - 14
 float orp = 0.0;		 // -400 - 400mV
-float nitrate = 0.0;	 // 0 - 500mg/L
+float tds = 0.0;		 //
 float temperature = 0.0; // 0-50c
 
 #define POINTS 3
@@ -76,29 +74,50 @@ double pHCalibrationPoints[2][POINTS] = {
 CalibratedSensor pHSensor;
 
 void setupADC() {
+	pinMode(WIRE_INT, OUTPUT); // capacitance drive pin
 	adc.begin(WIRE_SDA, WIRE_SCL);
-	adc.setGain(4);
-	adc.setDataRate(0);
-
-	// set the thresholds to that they don't trigger the interrupt pin
-	adc.setComparatorThresholdLow(0x0000);
-	adc.setComparatorThresholdHigh(0xFFFF);
-	adc.setComparatorQueConvert(0);
-	adc.setComparatorLatch(0);
-
-	pinMode(WIRE_INT, INPUT);
-	attachInterrupt(digitalPinToInterrupt(WIRE_INT), adcISR, FALLING);
-
-	adc.readADC(adcChannel); // trigger first read
+	adc.setWireClock(400000);
 }
 
 void fetchADC() {
-	if (adcReady) {
-		adcRaw[adcChannel] = (0.1 * adc.toVoltage(adc.getValue()) * 1000) + (0.9 * adcRaw[adcChannel]);
-		adcChannel = (adcChannel + 1) % 4;
-		adcReady = false;
-		adc.readADC(adcChannel); // request next channel
+	adc.setGain(4);			 // ±1.024 V LSB = 0.5 mV
+	adc.setDataRate(0);		 // 128 SPS
+	adc.setMode(1);			 // Single-shot mode
+	adc.readADC(adcChannel); // Trigger first read
+
+	for (size_t i = 0; i < 60; i++) {
+		if (adc.isReady()) {
+			adcRaw[adcChannel] = (0.1 * adc.toVoltage(adc.getValue()) * 1000) + (0.9 * adcRaw[adcChannel]);
+			adcChannel = (adcChannel + 1) % 3; // cycle from channel 0-2
+			adc.readADC(adcChannel);		   // request next channel
+		}
+		vTaskDelay((1000 / 128) / portTICK_PERIOD_MS);
 	}
+}
+
+void measureCapacitance() {
+	adc.setGain(8);		// ±0.512 V LSB = 0.25mV
+	adc.setDataRate(7); // 3300 SPS
+	adc.setMode(0);		// Continuous mode
+	adc.readADC(3);		// Trigger first read
+
+	int16_t raw = 0;
+	digitalWrite(WIRE_INT, HIGH);
+
+	while (raw < 2000) {
+		raw = adc.getValue();
+	}
+
+	digitalWrite(WIRE_INT, LOW);
+	uint32_t start = millis();
+
+	while (raw > 1800) {
+		raw = adc.getValue();
+		// vTaskDelay(10 / portTICK_PERIOD_MS);
+	}
+
+	uint32_t end = millis();
+	tdsRaw = 0.5 * (float)(end - start) + 0.5 * tdsRaw;
 }
 
 void setupEeprom() {
@@ -109,49 +128,47 @@ void setupEeprom() {
 }
 
 void setupTemperature() {
-	temperatureSensor.begin();
-	temperatureSensor.setWaitForConversion(false);
-	temperatureSensor.getAddress(tempDeviceAddress, 0);
-	temperatureSensor.setResolution(tempDeviceAddress, resolution);
-	temperatureSensor.requestTemperatures();
-	delayInMillis = 750 / (1 << (12 - resolution));
+	owTemp.begin();
+	owTemp.setWaitForConversion(false);
+	owTemp.setResolution(TEMP_RESOLUTION);
+	owTemp.getAddress(deviceAddress, 0);
+	owTemp.requestTemperatures();
 	lastTempRequest = millis();
 }
 
 void fetchTemperature() {
-	if (millis() - lastTempRequest >= delayInMillis) {
-		temperatureRaw = temperatureSensor.getTempCByIndex(0);
-		temperatureSensor.requestTemperatures();
+	if (millis() - lastTempRequest >= TEMP_CONVERSION_MS) {
+		temperature = 0.5 * owTemp.getTempC(deviceAddress) + 0.5 * temperature;
+		owTemp.requestTemperatures();
 		lastTempRequest = millis();
 	}
 }
 
 void convertData() {
-	pH = adcRaw[2] - adcRaw[1];
-	orp = adcRaw[2] - adcRaw[0];
-	nitrate = adcRaw[2] - adcRaw[3];
-	temperature = temperatureRaw;
-
-	Serial.printf("pH = %0.1f,	orp = %0.1f,	nitrate = %0.1f,	temperature = %0.2f\n", pH, orp, nitrate, temperature);
+	pH = adcRaw[1] - adcRaw[2];
+	orp = adcRaw[0] - adcRaw[2];
+	tds = tdsRaw;
 }
 
 void sensorTask(void *parameter) {
+	vTaskDelay(10 / portTICK_PERIOD_MS);
 	// setupEeprom();
 	setupADC();
 	setupTemperature();
-	while (true) {
-		for (size_t i = 0; i < 100; i++) {
-			fetchADC();
-			vTaskDelay(10 / portTICK_PERIOD_MS);
-		}
 
+	while (true) {
+		
+		fetchADC();
+		measureCapacitance();
 		fetchTemperature();
 		convertData();
+
+		Serial.printf("%i	%0.1f	%0.1f	%0.1f	%0.2f\n", millis(), pH, orp, tds, temperature);
 
 		// pHSensor.fitCurveFromPoints();
 
 		// Serial.println(pHSensor.convertFromRaw(-5.0));
 
-		// vTaskDelay(100 / portTICK_PERIOD_MS);
+		vTaskDelay(100 / portTICK_PERIOD_MS);
 	}
 }
