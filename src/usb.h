@@ -77,15 +77,26 @@ void usbTask(void *parameter) {
 
 	usb_msc.begin();
 
-	// while (!Serial)
-	// 	delay(10); // wait for native usb
-	// Serial.print("JEDEC ID: 0x");
-	// Serial.println(flash.getJEDECID(), HEX);
-	// Serial.print("Flash size: ");
-	// Serial.print(flash.size() / 1024);
-	// Serial.println(" KB");
 	if (!fileSystemActive) {
 		ESP_LOGE("FATFS", "Failed to init");
 	}
+	
+	while (true)
+	{
+		vTaskDelay(30 / portTICK_PERIOD_MS);
+	}
+	
 	vTaskDelete(NULL);
 }
+
+// if (fileSystemActive) {
+// 	File32 dataFile = fatfs.open("log.csv", O_WRITE | O_APPEND | O_CREAT);
+// 	// Check that the file opened successfully and write a line to it.
+// 	if (dataFile) {
+// 		dataFile.printf("%s,%i,%i,%i,%3.1f\n", getCurrentDateTime("%Y-%m-%d %H:%M:%S"), batteryMilliVolts, charging,
+// 						gps.timeToFirstFix(), batteryPercentage);
+// 		dataFile.close();
+// 	}else{
+// 		ESP_LOGE("FATFS", "Open File Error");
+// 	}
+// }

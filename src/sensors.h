@@ -157,13 +157,13 @@ void sensorTask(void *parameter) {
 	setupTemperature();
 
 	while (true) {
-		
+
 		fetchADC();
 		measureCapacitance();
 		fetchTemperature();
 		convertData();
 
-		Serial.printf("%i	%0.1f	%0.1f	%0.1f	%0.2f\n", millis(), pH, orp, tds, temperature);
+		//Serial.printf("%i	%0.1f	%0.1f	%0.1f	%0.2f\n", millis(), pH, orp, tds, temperature);
 
 		// pHSensor.fitCurveFromPoints();
 

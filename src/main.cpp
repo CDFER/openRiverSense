@@ -2,10 +2,11 @@
 
 #include "driver/rtc_io.h"
 #include "gps.h"
-#include "gui.h"
 #include "passwords.h"
 #include "sensors.h"
 #include "usb.h"
+
+#include "gui.h"
 
 #define SCREEN_ON_TIME 60 * 1
 #define GPS_ON_TIME_MAX 60 * 5
@@ -17,12 +18,11 @@ RTC_DATA_ATTR uint16_t batteryMilliVolts = 0;
 RTC_DATA_ATTR float batteryPercentage = 0.0;
 RTC_DATA_ATTR bool charging = false;
 
-volatile bool wakeToUI = false;
-
 int16_t watchDogCountdown = SCREEN_ON_TIME;
 
 constexpr uint32_t DEEPSLEEP_INTERUPT_BITMASK =
 	(1UL << WAKE_BUTTON) | (1UL << UP_BUTTON) | (1UL << DOWN_BUTTON) | (1UL << VUSB_MON);
+
 void enterDeepSleep(uint64_t deepSleepTime) {
 	esp_sleep_enable_ext1_wakeup(DEEPSLEEP_INTERUPT_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
 	// esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
@@ -32,11 +32,24 @@ void enterDeepSleep(uint64_t deepSleepTime) {
 	esp_deep_sleep_start();
 }
 
-void IRAM_ATTR wakeToUIISR() { wakeToUI = true; }
+enum ButtonStates : uint8_t { NOT_PRESSED = 0, UP_PRESSED, DOWN_PRESSED, WAKE_PRESSED };
+volatile ButtonStates buttonState = NOT_PRESSED;
+
+void IRAM_ATTR buttonISR() {
+	if (digitalRead(WAKE_BUTTON)) {
+		buttonState = WAKE_PRESSED;
+	} else if (digitalRead(UP_BUTTON)) {
+		buttonState = UP_PRESSED;
+	} else if (digitalRead(DOWN_BUTTON)) {
+		buttonState = DOWN_PRESSED;
+	} else {
+		buttonState = NOT_PRESSED;
+	}
+}
 
 void calculateBatteryPercentage() {
-	const uint16_t batteryCurve[3][12] = {{0, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4200, 9999},
-										  {0, 0, 13, 22, 39, 53, 64, 78, 92, 99, 100, 100}, // discharge
+	const uint16_t batteryCurve[3][12] = {{0, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4150, 9999},
+										  {0, 0, 13, 22, 39, 53, 64, 78, 92, 100, 100, 100}, // discharge
 										  {0, 0, 0, 13, 22, 39, 53, 64, 79, 94, 100, 100}}; // charge
 
 	// Determine the size of the lookup table
@@ -68,11 +81,18 @@ void calculateBatteryPercentage() {
 	return;
 }
 
-void batteryTask(void *parameter) {
-	vTaskDelay(1000 / portTICK_PERIOD_MS); // let battery settle
+void watchDogTask(void *parameter) {
+	pinMode(WAKE_BUTTON, INPUT);
+	pinMode(UP_BUTTON, INPUT);
+	pinMode(DOWN_BUTTON, INPUT);
+	attachInterrupt(WAKE_BUTTON, buttonISR, CHANGE);
+	attachInterrupt(UP_BUTTON, buttonISR, CHANGE);
+	attachInterrupt(DOWN_BUTTON, buttonISR, CHANGE);
+
 	pinMode(VUSB_MON, INPUT);
 	pinMode(VBAT_SENSE_EN, OUTPUT);
 	pinMode(VBAT_SENSE, INPUT);
+
 	while (true) {
 		TickType_t xLastWakeTime = xTaskGetTickCount();
 
@@ -84,9 +104,8 @@ void batteryTask(void *parameter) {
 
 		calculateBatteryPercentage();
 
-		if (charging || buttonPressed) {
+		if (charging) {
 			watchDogCountdown = SCREEN_ON_TIME;
-			buttonPressed = false;
 		} else {
 			watchDogCountdown -= WATCHDOG_TICK;
 		}
@@ -94,7 +113,6 @@ void batteryTask(void *parameter) {
 	}
 }
 
-TaskHandle_t guiHandle = NULL;
 enum states : uint8_t { STARTUP, UI_MODE, GPS_SYNC_MODE, ENTER_DEEPSLEEP };
 states state = STARTUP;
 void setup() { Serial.begin(); }
@@ -106,7 +124,7 @@ void loop() {
 		pinMode(OUTPUT_EN, OUTPUT);
 		digitalWrite(OUTPUT_EN, HIGH);
 		xTaskCreate(gpsTask, "gpsTask", 10000, NULL, 1, NULL);
-		xTaskCreate(batteryTask, "batteryTask", 2000, NULL, 1, NULL);
+		xTaskCreate(watchDogTask, "watchDogTask", 2000, NULL, 1, NULL);
 		xTaskCreate(usbTask, "usbTask", 10000, NULL, 1, NULL);
 
 		if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
@@ -118,43 +136,48 @@ void loop() {
 
 	case UI_MODE:
 		ESP_LOGI("State Machine", "UI_MODE");
-
-		xTaskCreate(guiTask, "guiTask", 10000, NULL, 3, &guiHandle);
 		xTaskCreate(sensorTask, "sensorTask", 10000, NULL, 1, NULL);
 
+		setupGui();
 		watchDogCountdown = SCREEN_ON_TIME;
+
 		while (watchDogCountdown > 0) {
-			vTaskDelay(1000 / portTICK_PERIOD_MS);
+			drawTopGui();
+			for (size_t i = 0; i < 60; i++) { //draw Top Gui every 60 frames
+				if (buttonState > NOT_PRESSED) {
+					switch (buttonState) {
+					case WAKE_PRESSED:
+						rootMenu.select();
+						break;
+					case UP_PRESSED:
+						rootMenu.prev();
+						break;
+					case DOWN_PRESSED:
+						rootMenu.next();
+						break;
+					}
+					rootMenu.display();
+					watchDogCountdown = SCREEN_ON_TIME;
+					buttonState = NOT_PRESSED;
+				}
+				rootMenu.refresh();
+				vTaskDelay(30 / portTICK_PERIOD_MS);
+			}
 		}
 		analogWrite(BACKLIGHT, 0);
-		vTaskDelete(guiHandle);
-
-		if (gps.hdop.hdop() > 1.0) {
-			state = GPS_SYNC_MODE;
-		} else {
-			state = ENTER_DEEPSLEEP;
-		}
+		state = ENTER_DEEPSLEEP;
 		break;
 
 	case GPS_SYNC_MODE:
 		ESP_LOGI("State Machine", "GPS_SYNC_MODE");
-		attachInterrupt(WAKE_BUTTON, wakeToUIISR, HIGH);
-		attachInterrupt(UP_BUTTON, wakeToUIISR, HIGH);
-		attachInterrupt(DOWN_BUTTON, wakeToUIISR, HIGH);
-		attachInterrupt(VUSB_MON, wakeToUIISR, HIGH);
 		watchDogCountdown = GPS_ON_TIME_MAX;
 
-		while ((gps.hdop.hdop() > 1.0 || gps.sentencesWithFix() == 0) && watchDogCountdown > 0 && !wakeToUI) {
+		while ((gps.hdop.hdop() > 1.0 || gps.sentencesWithFix() == 0) && watchDogCountdown > 0 && buttonState == NOT_PRESSED) {
 			vTaskDelay(10 / portTICK_PERIOD_MS);
 		}
 
-		if (wakeToUI) {
+		if (buttonState > NOT_PRESSED) {
 			state = UI_MODE;
-			detachInterrupt(WAKE_BUTTON);
-			detachInterrupt(UP_BUTTON);
-			detachInterrupt(DOWN_BUTTON);
-			detachInterrupt(VUSB_MON);
-			wakeToUI = false;
 
 		} else {
 
@@ -189,21 +212,7 @@ void loop() {
 		break;
 
 	case ENTER_DEEPSLEEP:
-		ESP_LOGI("State Machine", "ENTER_DEEPSLEEP");
 		digitalWrite(OUTPUT_EN, LOW);
-
-		// if (fileSystemActive) {
-		// 	File32 dataFile = fatfs.open("log.csv", O_WRITE | O_APPEND | O_CREAT);
-		// 	// Check that the file opened successfully and write a line to it.
-		// 	if (dataFile) {
-		// 		dataFile.printf("%s,%i,%i,%i,%3.1f\n", getCurrentDateTime("%Y-%m-%d %H:%M:%S"), batteryMilliVolts, charging,
-		// 						gps.timeToFirstFix(), batteryPercentage);
-		// 		dataFile.close();
-		// 	}else{
-		// 		ESP_LOGE("FATFS", "Open File Error");
-		// 	}
-		// }
-
 		ESP_LOGI("State Machine", "DEEPSLEEP");
 		enterDeepSleep(GPS_DEEPSLEEP);
 		break;
