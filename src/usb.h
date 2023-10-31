@@ -80,12 +80,11 @@ void usbTask(void *parameter) {
 	if (!fileSystemActive) {
 		ESP_LOGE("FATFS", "Failed to init");
 	}
-	
-	while (true)
-	{
+
+	while (true) {
 		vTaskDelay(30 / portTICK_PERIOD_MS);
 	}
-	
+
 	vTaskDelete(NULL);
 }
 

@@ -19,59 +19,73 @@ DeviceAddress deviceAddress;
 #define TEMP_RESOLUTION 12
 #define TEMP_CONVERSION_MS 750 / (1 << (12 - TEMP_RESOLUTION))
 unsigned long lastTempRequest = 0;
-
-float pH = 0.0;			 // 0 - 14
-float orp = 0.0;		 // -400 - 400mV
-float tds = 0.0;		 //
-float temperature = 0.0; // 0-50c
+float temperature = 0.0;
 
 #define POINTS 3
 #define ORDER 2
 
 class CalibratedSensor {
 public:
-	CalibratedSensor() {}
+	CalibratedSensor(const char *sensorName, uint16_t eepromAddress) {
+		_eepromAddress = eepromAddress;
+		_sensorName = sensorName;
+	}
 
 	double convertFromRaw(double raw) {
-		avRaw = 0.1 * raw + 0.9 * avRaw;
-		value = calibrationCoeffs[0] * pow(avRaw, 2) + calibrationCoeffs[1] * avRaw + calibrationCoeffs[2];
+		if (!importedDataPoints) {
+			importCalibrationFromEeprom();
+		}
+		_raw = raw;
+		value = coefficients[0] * pow(_raw, 2) - coefficients[1] * _raw + coefficients[2];
 		return value;
 	}
 
 	void fitCurveFromPoints() {
-		double calibrationPoints[2][POINTS] = {
-			{-200.0, 0.0, 200.0}, // raw input mV (X AXIS)
-			{4.00, 6.88, 9.23},	  // output (Y AXIS)
-		};
+		double x[POINTS];
+		double y[POINTS];
 
-		// double x[POINTS] = {-5, 0, 5, 10};
-		// double y[POINTS] = {0, 5, 10, 15};
+		for (int i = 0; i < POINTS; i++) {
+			x[i] = calibrationPoints[0][i]; // x values
+			y[i] = calibrationPoints[1][i]; // y values
+		}
 
-		// double x[POINTS] = {0, 5, 10};
-		// double y[POINTS] = {0, 5, 10};
+		fitCurve(ORDER, POINTS, x, y, ORDER + 1, coefficients);
 
-		double x[POINTS] = {0, 200, 400};
-		double y[POINTS] = {4.00, 6.88, 9.23};
+		Serial.println();
+		Serial.println(_sensorName);
+		Serial.printf("x:	%0.2f	%0.2f	%0.2f\n", x[0], x[1], x[2]);
+		Serial.printf("y:	%0.2f	%0.2f	%0.2f\n", y[0], y[1], y[2]);
+		Serial.printf("%0.6fx^2 + %0.6fx + %0.6f\n", coefficients[0], coefficients[1], coefficients[2]);
+	}
 
-		int err = fitCurve(ORDER, POINTS, x, y, ORDER + 1, calibrationCoeffs);
-		Serial.printf("err = %i A:%0.3f,B:%0.3f,C:%0.3f\n", err, calibrationCoeffs[0], calibrationCoeffs[1],
-					  calibrationCoeffs[2]);
+	void setCalibrationPoint(uint8_t index, double y) {
+		calibrationPoints[0][index] = _raw;
+		calibrationPoints[1][index] = y;
+
+		eeprom.updateBlock(_eepromAddress, (uint8_t *)calibrationPoints, sizeof(calibrationPoints));
+		fitCurveFromPoints();
+	}
+
+	void importCalibrationFromEeprom() {
+		eeprom.readBlock(_eepromAddress, (uint8_t *)calibrationPoints, sizeof(calibrationPoints));
+		fitCurveFromPoints();
+		importedDataPoints = true;
 	}
 
 	double value = 0.0;
 
 private:
-	double calibrationCoeffs[ORDER + 1];
-
-	double avRaw = 0.0;
+	double _raw;
+	double calibrationPoints[2][POINTS];
+	double coefficients[ORDER + 1];
+	bool importedDataPoints = false;
+	uint16_t _eepromAddress;
+	const char *_sensorName;
 };
 
-double pHCalibrationPoints[2][POINTS] = {
-	{-200.0, 0.0, 200.0}, // raw input mV (X AXIS)
-	{4.00, 6.88, 9.23},	  // output (Y AXIS)
-};
-
-CalibratedSensor pHSensor;
+CalibratedSensor pH("pH", 0x0000);
+CalibratedSensor orp("orp", 0x0100);
+CalibratedSensor tds("tds", 0x0200);
 
 void setupADC() {
 	pinMode(WIRE_INT, OUTPUT); // capacitance drive pin
@@ -145,30 +159,26 @@ void fetchTemperature() {
 }
 
 void convertData() {
-	pH = adcRaw[1] - adcRaw[2];
-	orp = adcRaw[0] - adcRaw[2];
-	tds = tdsRaw;
+	pH.convertFromRaw(adcRaw[1] - adcRaw[2]);
+	orp.convertFromRaw(adcRaw[0] - adcRaw[2]);
+	tds.convertFromRaw(tdsRaw);
 }
 
 void sensorTask(void *parameter) {
-	vTaskDelay(10 / portTICK_PERIOD_MS);
-	// setupEeprom();
+	vTaskDelay(5000 / portTICK_PERIOD_MS);
+	setupEeprom();
 	setupADC();
 	setupTemperature();
 
 	while (true) {
 
 		fetchADC();
-		measureCapacitance();
+		// measureCapacitance();
 		fetchTemperature();
 		convertData();
 
-		//Serial.printf("%i	%0.1f	%0.1f	%0.1f	%0.2f\n", millis(), pH, orp, tds, temperature);
+		// Serial.printf("%i	%0.1f	%0.1f	%0.1f	%0.2f\n", millis(), pH, orp, tds, temperature);
 
-		// pHSensor.fitCurveFromPoints();
-
-		// Serial.println(pHSensor.convertFromRaw(-5.0));
-
-		vTaskDelay(100 / portTICK_PERIOD_MS);
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
 	}
 }

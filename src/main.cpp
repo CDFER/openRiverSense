@@ -32,25 +32,10 @@ void enterDeepSleep(uint64_t deepSleepTime) {
 	esp_deep_sleep_start();
 }
 
-enum ButtonStates : uint8_t { NOT_PRESSED = 0, UP_PRESSED, DOWN_PRESSED, WAKE_PRESSED };
-volatile ButtonStates buttonState = NOT_PRESSED;
-
-void IRAM_ATTR buttonISR() {
-	if (digitalRead(WAKE_BUTTON)) {
-		buttonState = WAKE_PRESSED;
-	} else if (digitalRead(UP_BUTTON)) {
-		buttonState = UP_PRESSED;
-	} else if (digitalRead(DOWN_BUTTON)) {
-		buttonState = DOWN_PRESSED;
-	} else {
-		buttonState = NOT_PRESSED;
-	}
-}
-
 void calculateBatteryPercentage() {
 	const uint16_t batteryCurve[3][12] = {{0, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4150, 9999},
 										  {0, 0, 13, 22, 39, 53, 64, 78, 92, 100, 100, 100}, // discharge
-										  {0, 0, 0, 13, 22, 39, 53, 64, 79, 94, 100, 100}}; // charge
+										  {0, 0, 0, 13, 22, 39, 53, 64, 79, 94, 100, 100}};	 // charge
 
 	// Determine the size of the lookup table
 	uint8_t tableSize = sizeof(batteryCurve[0]) / sizeof(batteryCurve[0][0]);
@@ -82,13 +67,6 @@ void calculateBatteryPercentage() {
 }
 
 void watchDogTask(void *parameter) {
-	pinMode(WAKE_BUTTON, INPUT);
-	pinMode(UP_BUTTON, INPUT);
-	pinMode(DOWN_BUTTON, INPUT);
-	attachInterrupt(WAKE_BUTTON, buttonISR, CHANGE);
-	attachInterrupt(UP_BUTTON, buttonISR, CHANGE);
-	attachInterrupt(DOWN_BUTTON, buttonISR, CHANGE);
-
 	pinMode(VUSB_MON, INPUT);
 	pinMode(VBAT_SENSE_EN, OUTPUT);
 	pinMode(VBAT_SENSE, INPUT);
@@ -104,8 +82,9 @@ void watchDogTask(void *parameter) {
 
 		calculateBatteryPercentage();
 
-		if (charging) {
+		if (charging || resetWatchdog) {
 			watchDogCountdown = SCREEN_ON_TIME;
+			resetWatchdog = false;
 		} else {
 			watchDogCountdown -= WATCHDOG_TICK;
 		}
@@ -113,12 +92,13 @@ void watchDogTask(void *parameter) {
 	}
 }
 
-enum states : uint8_t { STARTUP, UI_MODE, GPS_SYNC_MODE, ENTER_DEEPSLEEP };
-states state = STARTUP;
+enum DeviceStates : uint8_t { STARTUP, UI_MODE, GPS_SYNC_MODE, ENTER_DEEPSLEEP };
+DeviceStates deviceState = STARTUP;
+
 void setup() { Serial.begin(); }
 
 void loop() {
-	switch (state) {
+	switch (deviceState) {
 	case STARTUP:
 		ESP_LOGI("State Machine", "STARTUP");
 		pinMode(OUTPUT_EN, OUTPUT);
@@ -126,46 +106,26 @@ void loop() {
 		xTaskCreate(gpsTask, "gpsTask", 10000, NULL, 1, NULL);
 		xTaskCreate(watchDogTask, "watchDogTask", 2000, NULL, 1, NULL);
 		xTaskCreate(usbTask, "usbTask", 10000, NULL, 1, NULL);
+		setupButtons();
 
 		if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
-			state = GPS_SYNC_MODE;
+			deviceState = GPS_SYNC_MODE;
 		} else {
-			state = UI_MODE;
+			deviceState = UI_MODE;
 		}
 		break;
 
 	case UI_MODE:
 		ESP_LOGI("State Machine", "UI_MODE");
 		xTaskCreate(sensorTask, "sensorTask", 10000, NULL, 1, NULL);
-
-		setupGui();
-		watchDogCountdown = SCREEN_ON_TIME;
+		xTaskCreate(guiTask, "guiTask", 10000, NULL, 2, NULL);
 
 		while (watchDogCountdown > 0) {
-			drawTopGui();
-			for (size_t i = 0; i < 60; i++) { //draw Top Gui every 60 frames
-				if (buttonState > NOT_PRESSED) {
-					switch (buttonState) {
-					case WAKE_PRESSED:
-						rootMenu.select();
-						break;
-					case UP_PRESSED:
-						rootMenu.prev();
-						break;
-					case DOWN_PRESSED:
-						rootMenu.next();
-						break;
-					}
-					rootMenu.display();
-					watchDogCountdown = SCREEN_ON_TIME;
-					buttonState = NOT_PRESSED;
-				}
-				rootMenu.refresh();
-				vTaskDelay(30 / portTICK_PERIOD_MS);
-			}
+			vTaskDelay(WATCHDOG_TICK * 1000 / portTICK_PERIOD_MS);
 		}
+
 		analogWrite(BACKLIGHT, 0);
-		state = ENTER_DEEPSLEEP;
+		deviceState = ENTER_DEEPSLEEP;
 		break;
 
 	case GPS_SYNC_MODE:
@@ -173,11 +133,12 @@ void loop() {
 		watchDogCountdown = GPS_ON_TIME_MAX;
 
 		while ((gps.hdop.hdop() > 1.0 || gps.sentencesWithFix() == 0) && watchDogCountdown > 0 && buttonState == NOT_PRESSED) {
-			vTaskDelay(10 / portTICK_PERIOD_MS);
+			vTaskDelay(50 / portTICK_PERIOD_MS);
 		}
 
 		if (buttonState > NOT_PRESSED) {
-			state = UI_MODE;
+			buttonState = NOT_PRESSED;
+			deviceState = UI_MODE;
 
 		} else {
 
@@ -206,7 +167,7 @@ void loop() {
 				io.run();
 			}
 
-			state = ENTER_DEEPSLEEP;
+			deviceState = ENTER_DEEPSLEEP;
 		}
 
 		break;
