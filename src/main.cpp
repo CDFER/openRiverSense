@@ -105,7 +105,6 @@ void loop() {
 		digitalWrite(OUTPUT_EN, HIGH);
 		xTaskCreate(gpsTask, "gpsTask", 10000, NULL, 1, NULL);
 		xTaskCreate(watchDogTask, "watchDogTask", 2000, NULL, 1, NULL);
-		xTaskCreate(usbTask, "usbTask", 10000, NULL, 1, NULL);
 		setupButtons();
 
 		if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
@@ -117,8 +116,9 @@ void loop() {
 
 	case UI_MODE:
 		ESP_LOGI("State Machine", "UI_MODE");
+		xTaskCreate(guiTask, "guiTask", 10000, NULL, 1, NULL);
 		xTaskCreate(sensorTask, "sensorTask", 10000, NULL, 1, NULL);
-		xTaskCreate(guiTask, "guiTask", 10000, NULL, 2, NULL);
+		xTaskCreate(usbTask, "usbTask", 10000, NULL, 1, NULL);
 
 		while (watchDogCountdown > 0) {
 			vTaskDelay(WATCHDOG_TICK * 1000 / portTICK_PERIOD_MS);

@@ -14,8 +14,8 @@ Adafruit_SPIFlash flash(&flashTransport);
 // USB Mass Storage object
 Adafruit_USBD_MSC usb_msc;
 
-bool fileSystemActive; // Check if flash is formatted and ready to use
-bool fs_changed;	   // Set to true when write to flash
+bool fs_formatted; // Check if flash is formatted and ready to use
+bool fs_changed;   // Set to true when write to flash
 
 // Callback invoked when received READ10 command.
 // Copy disk's data to buffer (up to bufsize) and
@@ -60,7 +60,7 @@ void usbTask(void *parameter) {
 	flash.begin();
 
 	// Set disk vendor id, product id and revision with string up to 8, 16, 4 characters respectively
-	usb_msc.setID("Kea", "OpenRiverSense", "0.1");
+	usb_msc.setID("Kea", "OpenRiverSense", "010");
 
 	// Set callback
 	usb_msc.setReadWriteCallback(msc_read_cb, msc_write_cb, msc_flush_cb);
@@ -72,30 +72,28 @@ void usbTask(void *parameter) {
 	fs_changed = false;
 	usb_msc.setReadyCallback(0, msc_ready_callback);
 
-	// Init file system on the flash
-	fileSystemActive = fatfs.begin(&flash);
-
 	usb_msc.begin();
 
-	if (!fileSystemActive) {
-		ESP_LOGE("FATFS", "Failed to init");
-	}
-
-	while (true) {
-		vTaskDelay(30 / portTICK_PERIOD_MS);
-	}
+	// Init file system on the flash
+	fs_formatted = fatfs.begin(&flash);
 
 	vTaskDelete(NULL);
 }
 
-// if (fileSystemActive) {
-// 	File32 dataFile = fatfs.open("log.csv", O_WRITE | O_APPEND | O_CREAT);
-// 	// Check that the file opened successfully and write a line to it.
-// 	if (dataFile) {
-// 		dataFile.printf("%s,%i,%i,%i,%3.1f\n", getCurrentDateTime("%Y-%m-%d %H:%M:%S"), batteryMilliVolts, charging,
-// 						gps.timeToFirstFix(), batteryPercentage);
-// 		dataFile.close();
-// 	}else{
-// 		ESP_LOGE("FATFS", "Open File Error");
-// 	}
-// }
+void saveRecordToFile() {
+	if (fs_formatted) {
+		File32 dataFile = fatfs.open("waterData.csv", O_WRITE | O_APPEND | O_CREAT);
+		// Check that the file opened successfully and write a line to it.
+		if (dataFile) {
+			if (dataFile.fileSize() == 0) {
+				dataFile.print("date(dd,mm,yyyy),latitude(deg),Longitude(deg),pH,ORP(mV),TDS(uS/cm),Temperature(degC)\n");
+			}
+
+			dataFile.printf("%s,%0.6f,%0.6f,%0.2f,%0.0f,%0.0f,%0.2f\n", getCurrentDateTime("%d-%m-%Y %H:%M"),
+							gps.location.lat(), gps.location.lng(), pH.value, orp.value, tds.value, temperature);
+
+			dataFile.close();
+		}
+	}
+	refreshMassStorage();
+}

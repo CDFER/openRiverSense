@@ -113,7 +113,7 @@ void drawTopGui() {
 		}
 
 		topGui.pushSprite(40, 10);
-		topGuiCounter = 60;
+		topGuiCounter = 20;
 	} else {
 		topGuiCounter--;
 	}
@@ -126,13 +126,15 @@ void setupMenuBuffer() {
 }
 
 void waitForButtonPress() {
+	vTaskDelay(100 / portTICK_PERIOD_MS);
+	buttonState = NOT_PRESSED;
 	while (buttonState == NOT_PRESSED) {
 		drawTopGui();
 		vTaskDelay(50 / portTICK_PERIOD_MS);
 	}
 }
 
-void drawSpinner(uint16_t totalTimeSeconds) {
+bool drawSpinner(uint16_t totalTimeSeconds) {
 	static char timeText[10];
 	const uint32_t x = MENU_WIDTH / 2;
 	const uint32_t y = MENU_HEIGHT / 2;
@@ -161,9 +163,11 @@ void drawSpinner(uint16_t totalTimeSeconds) {
 
 		menuBuffer.pushSprite(20, 40);
 
-		xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(30));
+		xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(33));
 	}
 	menuBuffer.setTextColor(TFT_WHITE, TFT_WHITE, false);
+
+	return buttonState == NOT_PRESSED;
 }
 
 void drawGPSView() {
@@ -204,14 +208,20 @@ void drawSatelliteView() {
 
 void drawDeviceInfo() {
 	menuBuffer.printf("%s Rev %i\n", ESP.getChipModel(), ESP.getChipRevision());
+	menuBuffer.setTextColor(TFT_LIGHTGREY);
 	menuBuffer.printf("   %i core @ %iMHz\n", ESP.getChipCores(), ESP.getCpuFreqMHz());
+	menuBuffer.setTextColor(TFT_WHITE);
 	menuBuffer.println("FLASH");
+	menuBuffer.setTextColor(TFT_LIGHTGREY);
 	menuBuffer.printf("   Size: %.0f MB\n", static_cast<float>(ESP.getFlashChipSize()) / (1024.0 * 1024.0));
 	menuBuffer.printf("   Speed: %.0f MHz\n", static_cast<float>(ESP.getFlashChipSpeed()) / (1000.0 * 1000.0));
+	menuBuffer.setTextColor(TFT_WHITE);
 	menuBuffer.println("FATFS");
+	menuBuffer.setTextColor(TFT_LIGHTGREY);
 	menuBuffer.printf("   Size: %.0f KB\n", static_cast<float>(flash.size()) / 1024.0);
 	menuBuffer.printf("   Free: %.0f%%\n",
 					  static_cast<float>(fatfs.freeClusterCount()) / static_cast<float>(fatfs.clusterCount()) * 100.0);
+	menuBuffer.setTextColor(TFT_WHITE);
 }
 
 void onPageView(MenuComponent *p_menu_component) {
@@ -253,24 +263,60 @@ void drawCalibrationPrep(const char *name, bool chooseCalibrate) {
 	menuBuffer.setCursor(0, 12);
 	menuBuffer.println("Place probe in buffer");
 	menuBuffer.println("solution and press ");
-	menuBuffer.println("calibrate...");
+	menuBuffer.println("set...");
 
 	static char componentText[24];
-	snprintf(componentText, sizeof(componentText), "Calibrate %s", name);
+	snprintf(componentText, sizeof(componentText), "Set %s", name);
 	menuRenderer.renderComponent(2, chooseCalibrate, componentText, "\ue3c9");
 	menuRenderer.renderComponent(3, !chooseCalibrate, "Back", "\ue5c4");
 	menuBuffer.pushSprite(20, 40);
 }
 
-void onRecord(MenuComponent *p_menu_component) { drawSpinner(10); }
+void drawRecord(bool saveToFile) {
+	setupMenuBuffer();
+
+	menuBuffer.printf("pH = %0.2f\n", pH.value);
+	menuBuffer.printf("ORP = %0.0f mV\n", orp.value);
+	menuBuffer.printf("TDS = %0.0f uS/cm\n", tds.value);
+	menuBuffer.printf("Temp = %0.1f deg C\n", temperature);
+
+	menuRenderer.renderComponent(2, saveToFile, "Save", "\ue161");
+	menuRenderer.renderComponent(3, !saveToFile, "Back", "\ue5c4");
+	menuBuffer.pushSprite(20, 40);
+}
+
+void onRecord(MenuComponent *p_menu_component) {
+	bool saveToFile = true;
+
+	sensorProbeOn = true;
+	if (drawSpinner(10)) {
+		sensorProbeOn = false;
+		do {
+			drawRecord(saveToFile);
+			waitForButtonPress();
+
+			if (buttonState == UP_PRESSED) {
+				saveToFile = true;
+			} else if (buttonState == DOWN_PRESSED) {
+				saveToFile = false;
+			}
+		} while (buttonState != WAKE_PRESSED);
+
+		if (saveToFile) {
+			saveRecordToFile();
+		}
+
+	} else {
+		sensorProbeOn = false;
+	}
+}
 
 void onCalibrate(MenuComponent *p_menu_component) {
 	const char *_name = p_menu_component->get_name();
-	bool chooseCalibrate = true;
+	bool chooseCalibrate = false;
 
 	do {
 		drawCalibrationPrep(_name, chooseCalibrate);
-		buttonState = NOT_PRESSED;
 		waitForButtonPress();
 
 		if (buttonState == UP_PRESSED) {
@@ -281,24 +327,37 @@ void onCalibrate(MenuComponent *p_menu_component) {
 	} while (buttonState != WAKE_PRESSED);
 
 	if (chooseCalibrate == true) {
-		drawSpinner(10);
+		sensorProbeOn = true;
+		if (drawSpinner(10)) {
+			sensorProbeOn = false;
+			if (strcmp(_name, "pH 9.2") == 0) {
+				pH.setCurrentCalibrationPoint(0, 9.23);
+			} else if (strcmp(_name, "pH 6.9") == 0) {
+				pH.setCurrentCalibrationPoint(1, 6.88);
+			} else if (strcmp(_name, "pH 4.0") == 0) {
+				pH.setCurrentCalibrationPoint(2, 4.00);
 
-		if (strcmp(_name, "pH 9.2") == 0) {
-			pH.setCalibrationPoint(0, 9.23);
-		} else if (strcmp(_name, "pH 6.9") == 0) {
-			pH.setCalibrationPoint(1, 6.88);
-		} else if (strcmp(_name, "pH 4.0") == 0) {
-			pH.setCalibrationPoint(2, 4.00);
-		} else if (strcmp(_name, ".256V") == 0) {
-			orp.setCalibrationPoint(0, 256);
+			} else if (strcmp(_name, "256mV") == 0) {
+				orp.setCalibrationPoint(0, 0, 0);
+				orp.setCurrentCalibrationPoint(1, 256);
+
+			} else if (strcmp(_name, "0g/L NaCl") == 0) {
+				tds.setCurrentCalibrationPoint(0, 0);
+			} else if (strcmp(_name, ".5g/L NaCl") == 0) {
+				tds.setCurrentCalibrationPoint(1, 1008);
+			} else if (strcmp(_name, "1g/L NaCl") == 0) {
+				tds.setCurrentCalibrationPoint(2, 1990);
+			}
+		} else {
+			sensorProbeOn = false;
 		}
 	}
 }
 
 MenuSystem rootMenu(menuRenderer);
-MenuItem measure("Measure", "\uef3a", &onRecord);
+MenuItem measure("Add Record", "\uef3a", &onRecord);
 
-Menu calibrateMenu("Calibrate", "\ue429");
+Menu calibrateMenu("Calibrate", "\uea4b");
 BackMenuItem calibrateMenuBack("Back", "\ue5c4", NULL, &rootMenu);
 
 Menu phCalibrate("pH", "\uf87a");
@@ -308,10 +367,13 @@ MenuItem pH4("pH 4.0", "\ue3c9", &onCalibrate);
 BackMenuItem pHBack("Back", "\ue5c4", NULL, &rootMenu);
 
 Menu orpCalibrate("ORP", "\uf878");
-MenuItem orp256(".256V", "\ue3c9", &onCalibrate);
+MenuItem orp256("256mV", "\ue3c9", &onCalibrate);
 BackMenuItem orpBack("Back", "\ue5c4", NULL, &rootMenu);
 
 Menu tdsCalibrate("TDS", "\uf876");
+MenuItem tds0("0g/L NaCl", "\ue3c9", &onCalibrate);
+MenuItem tds500(".5g/L NaCl", "\ue3c9", &onCalibrate);
+MenuItem tds1000("1g/L NaCl", "\ue3c9", &onCalibrate);
 BackMenuItem tdsBack("Back", "\ue5c4", NULL, &rootMenu);
 
 Menu settingsMenu("Settings", "\ue8b8");
@@ -339,8 +401,11 @@ void setupMenu() {
 	orpCalibrate.add_item(&orp256);
 	orpCalibrate.add_item(&orpBack);
 
-	// calibrateMenu.add_menu(&tdsCalibrate);
-	// tdsCalibrate.add_item(&tdsBack);
+	calibrateMenu.add_menu(&tdsCalibrate);
+	tdsCalibrate.add_item(&tds0);
+	tdsCalibrate.add_item(&tds500);
+	tdsCalibrate.add_item(&tds1000);
+	tdsCalibrate.add_item(&tdsBack);
 
 	calibrateMenu.add_item(&calibrateMenuBack);
 
@@ -355,6 +420,7 @@ void setupMenu() {
 	debugMenu.add_item(&debugMenuBack);
 
 	rootMenu.display();
+	drawTopGui();
 }
 
 void setupButtons() {
@@ -392,23 +458,19 @@ void guiTask(void *parameter) {
 	analogWrite(BACKLIGHT, BACKLIGHT_BRIGHTNESS);
 
 	while (true) {
-		drawTopGui();
-		if (buttonState > NOT_PRESSED) {
-			switch (buttonState) {
-			case WAKE_PRESSED:
-				rootMenu.select();
-				break;
-			case UP_PRESSED:
-				rootMenu.prev();
-				break;
-			case DOWN_PRESSED:
-				rootMenu.next();
-				break;
-			}
-			rootMenu.display();
-			resetWatchdog = true;
-			buttonState = NOT_PRESSED;
+		waitForButtonPress();
+		switch (buttonState) {
+		case WAKE_PRESSED:
+			rootMenu.select();
+			break;
+		case UP_PRESSED:
+			rootMenu.prev();
+			break;
+		case DOWN_PRESSED:
+			rootMenu.next();
+			break;
 		}
-		vTaskDelay(50 / portTICK_PERIOD_MS);
+		rootMenu.display();
+		resetWatchdog = true;
 	}
 }

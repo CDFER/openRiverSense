@@ -6,6 +6,8 @@
 #include <OneWire.h>
 #include <curveFitting.h>
 
+bool sensorProbeOn = false;
+
 I2C_eeprom eeprom(0x50, I2C_DEVICESIZE_24LC64);
 
 ADS1015 adc(0x48);
@@ -21,12 +23,13 @@ DeviceAddress deviceAddress;
 unsigned long lastTempRequest = 0;
 float temperature = 0.0;
 
-#define POINTS 3
-#define ORDER 2
-
 class CalibratedSensor {
 public:
-	CalibratedSensor(const char *sensorName, uint16_t eepromAddress) {
+	CalibratedSensor(const char *sensorName, uint16_t eepromAddress, int points, int order) {
+		points_ = points;
+		order_ = order;
+		calibrationPoints_[0][points_] = {};
+		coefficients_[order_ + 1] = {};
 		_eepromAddress = eepromAddress;
 		_sensorName = sensorName;
 	}
@@ -36,38 +39,55 @@ public:
 			importCalibrationFromEeprom();
 		}
 		_raw = raw;
-		value = coefficients[0] * pow(_raw, 2) - coefficients[1] * _raw + coefficients[2];
+		value = 0.0;
+
+		// Calculate the value using the polynomial equation
+		for (int i = 0; i <= order_; i++) {
+			value += coefficients_[i] * pow(_raw, order_ - i);
+		}
+
 		return value;
 	}
 
 	void fitCurveFromPoints() {
-		double x[POINTS];
-		double y[POINTS];
-
-		for (int i = 0; i < POINTS; i++) {
-			x[i] = calibrationPoints[0][i]; // x values
-			y[i] = calibrationPoints[1][i]; // y values
-		}
-
-		fitCurve(ORDER, POINTS, x, y, ORDER + 1, coefficients);
-
 		Serial.println();
 		Serial.println(_sensorName);
-		Serial.printf("x:	%0.2f	%0.2f	%0.2f\n", x[0], x[1], x[2]);
-		Serial.printf("y:	%0.2f	%0.2f	%0.2f\n", y[0], y[1], y[2]);
-		Serial.printf("%0.6fx^2 + %0.6fx + %0.6f\n", coefficients[0], coefficients[1], coefficients[2]);
+
+		double x[points_];
+		double y[points_];
+
+		for (int i = 0; i < points_; i++) {
+			x[i] = calibrationPoints_[0][i]; // x values
+			y[i] = calibrationPoints_[1][i]; // y values
+
+			Serial.printf("(%0.2f,%0.2f)", x[i], y[i]);
+		}
+
+		fitCurve(order_, points_, x, y, order_ + 1, coefficients_);
+
+		Serial.println();
+
+		for (int i = 0; i < order_; i++) {
+			Serial.printf("%0.6fx^%d + ", coefficients_[i], order_ - i);
+		}
+
+		Serial.printf("%0.6f", coefficients_[order_]);
+
+		Serial.println();
 	}
 
-	void setCalibrationPoint(uint8_t index, double y) {
-		calibrationPoints[0][index] = _raw;
-		calibrationPoints[1][index] = y;
+	void setCurrentCalibrationPoint(uint8_t index, double y) { setCalibrationPoint(index, _raw, y); }
 
-		eeprom.updateBlock(_eepromAddress, (uint8_t *)calibrationPoints, sizeof(calibrationPoints));
+	void setCalibrationPoint(uint8_t index, double x, double y) {
+		calibrationPoints_[0][index] = x;
+		calibrationPoints_[1][index] = y;
+
+		eeprom.updateBlock(_eepromAddress, (uint8_t *)calibrationPoints_, sizeof(calibrationPoints_));
 		fitCurveFromPoints();
 	}
 
 	void importCalibrationFromEeprom() {
-		eeprom.readBlock(_eepromAddress, (uint8_t *)calibrationPoints, sizeof(calibrationPoints));
+		eeprom.readBlock(_eepromAddress, (uint8_t *)calibrationPoints_, sizeof(calibrationPoints_));
 		fitCurveFromPoints();
 		importedDataPoints = true;
 	}
@@ -76,16 +96,18 @@ public:
 
 private:
 	double _raw;
-	double calibrationPoints[2][POINTS];
-	double coefficients[ORDER + 1];
+	double calibrationPoints_[2][3];
+	double coefficients_[3];
 	bool importedDataPoints = false;
 	uint16_t _eepromAddress;
 	const char *_sensorName;
+	uint8_t points_; // number of data points for calibration
+	uint8_t order_;	 // polynomial order
 };
 
-CalibratedSensor pH("pH", 0x0000);
-CalibratedSensor orp("orp", 0x0100);
-CalibratedSensor tds("tds", 0x0200);
+CalibratedSensor pH("pH", 0x0000, 3, 2);
+CalibratedSensor orp("orp", 0x0100, 2, 1);
+CalibratedSensor tds("tds", 0x0200, 3, 2);
 
 void setupADC() {
 	pinMode(WIRE_INT, OUTPUT); // capacitance drive pin
@@ -105,7 +127,7 @@ void fetchADC() {
 			adcChannel = (adcChannel + 1) % 3; // cycle from channel 0-2
 			adc.readADC(adcChannel);		   // request next channel
 		}
-		vTaskDelay((1000 / 128) / portTICK_PERIOD_MS);
+		vTaskDelay((1000 / 128) + 1 / portTICK_PERIOD_MS);
 	}
 }
 
@@ -136,7 +158,12 @@ void measureCapacitance() {
 
 void setupEeprom() {
 	eeprom.begin(WIRE_SDA, WIRE_SCL);
-	if (!eeprom.isConnected()) {
+	if (eeprom.isConnected()) {
+		pH.importCalibrationFromEeprom();
+		orp.importCalibrationFromEeprom();
+		tds.importCalibrationFromEeprom();
+
+	} else {
 		Serial.println("eeprom not connected");
 	}
 }
@@ -152,7 +179,7 @@ void setupTemperature() {
 
 void fetchTemperature() {
 	if (millis() - lastTempRequest >= TEMP_CONVERSION_MS) {
-		temperature = 0.5 * owTemp.getTempC(deviceAddress) + 0.5 * temperature;
+		temperature = owTemp.getTempC(deviceAddress);
 		owTemp.requestTemperatures();
 		lastTempRequest = millis();
 	}
@@ -171,14 +198,14 @@ void sensorTask(void *parameter) {
 	setupTemperature();
 
 	while (true) {
-
-		fetchADC();
-		// measureCapacitance();
-		fetchTemperature();
-		convertData();
-
-		// Serial.printf("%i	%0.1f	%0.1f	%0.1f	%0.2f\n", millis(), pH, orp, tds, temperature);
-
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		if (sensorProbeOn) {
+			fetchADC();
+			measureCapacitance();
+			fetchTemperature();
+			convertData();
+			Serial.printf("%i	%0.2f	%0.0f	%0.0f	%0.1f\n", millis(), pH.value, orp.value, tds.value, temperature);
+		} else {
+			vTaskDelay(100 / portTICK_PERIOD_MS);
+		}
 	}
 }
