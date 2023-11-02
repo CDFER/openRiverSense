@@ -21,7 +21,7 @@ TFT_eSprite menuBuffer = TFT_eSprite(&screen); //~40kb in size
 
 enum ButtonStates : uint8_t { NOT_PRESSED = 0, UP_PRESSED, DOWN_PRESSED, WAKE_PRESSED };
 volatile ButtonStates buttonState = NOT_PRESSED;
-bool resetWatchdog = false;
+bool buttonPressed = false;
 uint8_t topGuiCounter = 0;
 
 void IRAM_ATTR buttonISR() {
@@ -34,6 +34,7 @@ void IRAM_ATTR buttonISR() {
 	} else {
 		buttonState = NOT_PRESSED;
 	}
+	buttonPressed = true;
 }
 
 uint8_t menuIndex;
@@ -471,6 +472,5 @@ void guiTask(void *parameter) {
 			break;
 		}
 		rootMenu.display();
-		resetWatchdog = true;
 	}
 }

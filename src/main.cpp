@@ -12,13 +12,13 @@
 #define GPS_ON_TIME_MAX 60 * 5
 #define GPS_DEEPSLEEP 60 * 60
 
-#define WATCHDOG_TICK 1
-
 RTC_DATA_ATTR uint16_t batteryMilliVolts = 0;
 RTC_DATA_ATTR float batteryPercentage = 0.0;
 RTC_DATA_ATTR bool charging = false;
 
-int16_t watchDogCountdown = SCREEN_ON_TIME;
+int16_t screenOnCountdown = SCREEN_ON_TIME;
+int16_t gpsOnCountdown = GPS_ON_TIME_MAX;
+double gpsHDOPThreshold = 1.0;
 
 constexpr uint32_t DEEPSLEEP_INTERUPT_BITMASK =
 	(1UL << WAKE_BUTTON) | (1UL << UP_BUTTON) | (1UL << DOWN_BUTTON) | (1UL << VUSB_MON);
@@ -63,10 +63,9 @@ void calculateBatteryPercentage() {
 			break;
 		}
 	}
-	return;
 }
 
-void watchDogTask(void *parameter) {
+void batteryTask(void *parameter) {
 	pinMode(VUSB_MON, INPUT);
 	pinMode(VBAT_SENSE_EN, OUTPUT);
 	pinMode(VBAT_SENSE, INPUT);
@@ -82,13 +81,7 @@ void watchDogTask(void *parameter) {
 
 		calculateBatteryPercentage();
 
-		if (charging || resetWatchdog) {
-			watchDogCountdown = SCREEN_ON_TIME;
-			resetWatchdog = false;
-		} else {
-			watchDogCountdown -= WATCHDOG_TICK;
-		}
-		xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(WATCHDOG_TICK * 1000));
+		xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(10000));
 	}
 }
 
@@ -98,78 +91,51 @@ DeviceStates deviceState = STARTUP;
 void setup() { Serial.begin(); }
 
 void loop() {
+	TickType_t xLastWakeTime = xTaskGetTickCount();
 	switch (deviceState) {
 	case STARTUP:
 		ESP_LOGI("State Machine", "STARTUP");
 		pinMode(OUTPUT_EN, OUTPUT);
 		digitalWrite(OUTPUT_EN, HIGH);
 		xTaskCreate(gpsTask, "gpsTask", 10000, NULL, 1, NULL);
-		xTaskCreate(watchDogTask, "watchDogTask", 2000, NULL, 1, NULL);
+		xTaskCreate(batteryTask, "batteryTask", 2000, NULL, 2, NULL);
+		xTaskCreate(guiTask, "guiTask", 10000, NULL, 2, NULL);
+		xTaskCreate(sensorTask, "sensorTask", 10000, NULL, 3, NULL);
+		xTaskCreate(usbTask, "usbTask", 10000, NULL, 1, NULL);
 		setupButtons();
 
 		if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
 			deviceState = GPS_SYNC_MODE;
+			gpsHDOPThreshold = 1.5;
 		} else {
 			deviceState = UI_MODE;
+			gpsHDOPThreshold = 0.8;
 		}
 		break;
 
 	case UI_MODE:
-		ESP_LOGI("State Machine", "UI_MODE");
-		xTaskCreate(guiTask, "guiTask", 10000, NULL, 1, NULL);
-		xTaskCreate(sensorTask, "sensorTask", 10000, NULL, 1, NULL);
-		xTaskCreate(usbTask, "usbTask", 10000, NULL, 1, NULL);
-
-		while (watchDogCountdown > 0) {
-			vTaskDelay(WATCHDOG_TICK * 1000 / portTICK_PERIOD_MS);
+		if (buttonPressed || charging) {
+			screenOnCountdown = SCREEN_ON_TIME;
+			buttonPressed = false;
+		} else if (screenOnCountdown <= 0) {
+			deviceState = GPS_SYNC_MODE;
+			analogWrite(BACKLIGHT, 0);
+		} else {
+			screenOnCountdown -= 1;
+			xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1000));
 		}
-
-		analogWrite(BACKLIGHT, 0);
-		deviceState = ENTER_DEEPSLEEP;
 		break;
 
 	case GPS_SYNC_MODE:
-		ESP_LOGI("State Machine", "GPS_SYNC_MODE");
-		watchDogCountdown = GPS_ON_TIME_MAX;
-
-		while ((gps.hdop.hdop() > 1.0 || gps.sentencesWithFix() == 0) && watchDogCountdown > 0 && buttonState == NOT_PRESSED) {
-			vTaskDelay(50 / portTICK_PERIOD_MS);
-		}
-
-		if (buttonState > NOT_PRESSED) {
-			buttonState = NOT_PRESSED;
+		if (buttonPressed || charging) {
 			deviceState = UI_MODE;
-
-		} else {
-
-			ESP_LOGI("Adafruit IO", "Connecting...");
-			io.connect();
-
-			// wait for a connection
-			for (size_t i = 0; i < 10 && io.status() < AIO_CONNECTED; i++) {
-				vTaskDelay(500 / portTICK_PERIOD_MS);
-			}
-
-			ESP_LOGI("Adafruit IO", "%s", io.statusText());
-
-			if (io.status() == AIO_CONNECTED) {
-				ESP_LOGI("Adafruit IO", "sending to feed");
-
-				AdafruitIO_Feed *deepsleep = io.feed("batteryvoltage");
-				deepsleep->save(batteryMilliVolts);
-
-				AdafruitIO_Feed *location = io.feed("location");
-				location->save(gps.timeToFirstFix(), gps.location.lat(), gps.location.lng(), gps.altitude.meters());
-
-				AdafruitIO_Feed *gpssynctime = io.feed("gpssynctime");
-				gpssynctime->save(millis());
-
-				io.run();
-			}
-
+			analogWrite(BACKLIGHT, BACKLIGHT_BRIGHTNESS);
+		} else if (gps.hdop.hdop() < gpsHDOPThreshold || gpsOnCountdown <= 0) {
 			deviceState = ENTER_DEEPSLEEP;
+		} else {
+			gpsOnCountdown -= 1;
+			xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1000));
 		}
-
 		break;
 
 	case ENTER_DEEPSLEEP:

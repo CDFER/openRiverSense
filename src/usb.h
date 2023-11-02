@@ -80,13 +80,28 @@ void usbTask(void *parameter) {
 	vTaskDelete(NULL);
 }
 
+/**
+ * @brief Get the current date and time as a formatted string.
+ *
+ * @param format The desired format of the date and time string.
+ * @return The current date and time as a formatted string.
+ */
+const char *getCurrentDateTime(const char *format) {
+	static char dateTime[32];
+	time_t currentEpoch;
+	time(&currentEpoch);
+	struct tm *timeInfo = localtime(&currentEpoch);
+	strftime(dateTime, sizeof(dateTime), format, timeInfo);
+	return dateTime;
+}
+
 void saveRecordToFile() {
 	if (fs_formatted) {
 		File32 dataFile = fatfs.open("waterData.csv", O_WRITE | O_APPEND | O_CREAT);
 		// Check that the file opened successfully and write a line to it.
 		if (dataFile) {
 			if (dataFile.fileSize() == 0) {
-				dataFile.print("date(dd,mm,yyyy),latitude(deg),Longitude(deg),pH,ORP(mV),TDS(uS/cm),Temperature(degC)\n");
+				dataFile.print("date(dd-mm-yyyy HH:MM),latitude(deg),Longitude(deg),pH,ORP(mV),TDS(uS/cm),Temperature(degC)\n");
 			}
 
 			dataFile.printf("%s,%0.6f,%0.6f,%0.2f,%0.0f,%0.0f,%0.2f\n", getCurrentDateTime("%d-%m-%Y %H:%M"),

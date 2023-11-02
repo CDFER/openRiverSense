@@ -7,9 +7,7 @@ const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";
 
 void IRAM_ATTR gpsISR() {
 	while (GPS_Serial.available() > 0) {
-		char x = GPS_Serial.read();
-		// Serial.write(x);
-		gps.encode(x);
+		gps.encode(GPS_Serial.read());
 	}
 }
 
@@ -51,19 +49,4 @@ void gpsTask(void *parameter) {
 	tzset();
 
 	vTaskDelete(NULL);
-}
-
-/**
- * @brief Get the current date and time as a formatted string.
- *
- * @param format The desired format of the date and time string.
- * @return The current date and time as a formatted string.
- */
-const char *getCurrentDateTime(const char *format) {
-	static char dateTime[32];
-	time_t currentEpoch;
-	time(&currentEpoch);
-	struct tm *timeInfo = localtime(&currentEpoch);
-	strftime(dateTime, sizeof(dateTime), format, timeInfo);
-	return dateTime;
 }
