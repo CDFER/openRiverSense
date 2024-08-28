@@ -14,8 +14,8 @@ Adafruit_SPIFlash flash(&flashTransport);
 // USB Mass Storage object
 Adafruit_USBD_MSC usb_msc;
 
-bool fs_formatted; // Check if flash is formatted and ready to use
-bool fs_changed;   // Set to true when write to flash
+bool fs_formatted;	// Check if flash is formatted and ready to use
+bool fs_changed;	// Set to true when write to flash
 
 // Callback invoked when received READ10 command.
 // Copy disk's data to buffer (up to bufsize) and
@@ -54,7 +54,9 @@ bool msc_ready_callback(void) {
 	return ret;
 }
 
-void refreshMassStorage(void) { fs_changed = true; }
+void refreshMassStorage(void) {
+	fs_changed = true;
+}
 
 void usbTask(void *parameter) {
 	flash.begin();
@@ -76,6 +78,9 @@ void usbTask(void *parameter) {
 
 	// Init file system on the flash
 	fs_formatted = fatfs.begin(&flash);
+	if (fs_formatted == false) {
+		fatfs.init(&flash);
+	}
 
 	vTaskDelete(NULL);
 }
@@ -101,12 +106,33 @@ void saveRecordToFile() {
 		// Check that the file opened successfully and write a line to it.
 		if (dataFile) {
 			if (dataFile.fileSize() == 0) {
-				dataFile.print("date(dd-mm-yyyy HH:MM),latitude(deg),Longitude(deg),pH,ORP(mV),TDS(uS/cm),Temperature(degC)\n");
+				dataFile.print(
+					"date(dd-mm-yyyy HH:MM),latitude(deg),Longitude(deg),pH,ORP(mV),Conductivity(uS/cm),Temperature(degC)\n");
 			}
 
-			dataFile.printf("%s,%0.6f,%0.6f,%0.2f,%0.0f,%0.0f,%0.2f\n", getCurrentDateTime("%d-%m-%Y %H:%M"),
+			dataFile.printf("%s,%0.6f,%0.6f,%0.2f,%0.0f,%0.0f,%0.1f\n", getCurrentDateTime("%d-%m-%Y %H:%M"),
 							gps.location.lat(), gps.location.lng(), pH.value, orp.value, tds.value, temperature);
 
+			dataFile.close();
+		}
+	}
+	refreshMassStorage();
+}
+
+void saveAnalyticsToFile(uint16_t batteryMilliVolts, uint16_t screenTime, uint16_t lightSleepTime) {
+	if (fs_formatted) {
+		File32 dataFile = fatfs.open("analytics.csv", O_WRITE | O_APPEND | O_CREAT);
+		// Check that the file opened successfully and write a line to it.
+		if (dataFile) {
+			if (dataFile.fileSize() == 0) {
+				dataFile.print(
+					"epoch(s from1970),date(dd-mm-yyyy HH:MM),Battery(mV),HDOP,TTFF(ms),ScreenTime(s),LightSleepTime(s),TotalTime(s)\n");
+			}
+
+			time_t currentEpoch;
+			time(&currentEpoch);
+
+			dataFile.printf("%i,%s,%i,%i,%i,%i,%i\n", currentEpoch, getCurrentDateTime("%d-%m-%Y %H:%M"), batteryMilliVolts, gps.hdop.value(), gps.timeToFirstFix(), screenTime, lightSleepTime, millis() / 1000);
 			dataFile.close();
 		}
 	}

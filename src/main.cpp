@@ -1,41 +1,86 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include "secrets.h"
 
 #include "driver/rtc_io.h"
 #include "gps.h"
-#include "passwords.h"
 #include "sensors.h"
 #include "usb.h"
 
+// Todo List
+//- Add assist now functionality
+
+TaskHandle_t sensorTaskHandle = NULL;
+
 #include "gui.h"
 
-#define SCREEN_ON_TIME 60 * 1
-#define GPS_ON_TIME_MAX 60 * 5
-#define GPS_DEEPSLEEP 60 * 60
+#define SCREEN_ON_TIME 60 * 1				//1min
+#define GPS_ON_TIME_MIN 60 * 1				//1min
+#define GPS_ON_TIME_MAX_OFF_HOURS 60 * 3	//3mins
+#define GPS_ON_TIME_MAX_WORK_HOURS 60 * 12	//12mins
+#define GPS_DEEPSLEEP_SECONDS 8 * 60 * 60	//8hrs
+#define MINIMUM_BATTERY_WAKEUP 3700			//3.7V
+#define MINIMUM_BATTERY 3300				//3.3V
 
 RTC_DATA_ATTR uint16_t batteryMilliVolts = 0;
 RTC_DATA_ATTR float batteryPercentage = 0.0;
 RTC_DATA_ATTR bool charging = false;
+RTC_DATA_ATTR float averageGPSTimeToLocationFixSeconds = 0.0;
 
 int16_t screenOnCountdown = SCREEN_ON_TIME;
-int16_t gpsOnCountdown = GPS_ON_TIME_MAX;
-double gpsHDOPThreshold = 1.0;
+float gpsHDOPThreshold = 1.5;
+int16_t screenTime = 0;
+int16_t lightSleepTime = 0;
+bool workingHours = true;
+
+enum DeviceStates : uint8_t { STARTUP,
+							  UI_MODE,
+							  LIGHT_SLEEP,
+							  ENTER_DEEPSLEEP };
+DeviceStates deviceState = STARTUP;
+TaskHandle_t guiTaskHandle = NULL;
 
 constexpr uint32_t DEEPSLEEP_INTERUPT_BITMASK =
 	(1UL << WAKE_BUTTON) | (1UL << UP_BUTTON) | (1UL << DOWN_BUTTON) | (1UL << VUSB_MON);
 
-void enterDeepSleep(uint64_t deepSleepTime) {
+void enterDeepSleep(uint64_t deepSleepTimeSeconds = GPS_DEEPSLEEP_SECONDS) {
+#define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
+
+	int32_t DEEPSLEEP_INTERUPT_BITMASK = (1UL << WAKE_BUTTON) | (1UL << UP_BUTTON) | (1UL << DOWN_BUTTON);
+
+	if (!charging) {
+		DEEPSLEEP_INTERUPT_BITMASK = DEEPSLEEP_INTERUPT_BITMASK | (1UL << VUSB_MON);
+	}
+
 	esp_sleep_enable_ext1_wakeup(DEEPSLEEP_INTERUPT_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
 	// esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
 	// esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
 	// esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
-	esp_sleep_enable_timer_wakeup(deepSleepTime * 1000000ULL);
+	if (batteryMilliVolts > MINIMUM_BATTERY_WAKEUP) {
+		if (!workingHours) {
+			time_t currentEpoch;
+			time(&currentEpoch);
+			struct tm *timeInfo = localtime(&currentEpoch);
+
+			// Calculate the seconds until 09:00
+			uint64_t secondsUntilTarget = (9 * 3600 - (timeInfo->tm_hour * 3600 + timeInfo->tm_min * 60 + timeInfo->tm_sec)) % (24 * 3600);
+
+			if (secondsUntilTarget < 0) {
+				secondsUntilTarget += 24 * 3600;
+			}
+
+			printf("Seconds until 09:00: %d\n", secondsUntilTarget);
+		}
+
+		esp_sleep_enable_timer_wakeup(deepSleepTimeSeconds * uS_TO_S_FACTOR);
+	}
 	esp_deep_sleep_start();
 }
 
 void calculateBatteryPercentage() {
-	const uint16_t batteryCurve[3][12] = {{0, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4150, 9999},
-										  {0, 0, 13, 22, 39, 53, 64, 78, 92, 100, 100, 100}, // discharge
-										  {0, 0, 0, 13, 22, 39, 53, 64, 79, 94, 100, 100}};	 // charge
+	const uint16_t batteryCurve[3][13] = { { 0, 3300, 3350, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4200, 9999 },
+										   { 0, 0, 0, 13, 21, 39, 53, 64, 78, 92, 100, 100, 100 },	// discharge
+										   { 0, 0, 0, 0, 1, 13, 22, 39, 58, 70, 85, 100, 100 } };	// charge
 
 	// Determine the size of the lookup table
 	uint8_t tableSize = sizeof(batteryCurve[0]) / sizeof(batteryCurve[0][0]);
@@ -56,7 +101,7 @@ void calculateBatteryPercentage() {
 			if (batteryPercentage == 0.0) {
 				batteryPercentage = (float)(rawPercentage);
 			} else {
-				batteryPercentage = batteryPercentage * 0.9 + (float)(rawPercentage)*0.1;
+				batteryPercentage = batteryPercentage * 0.9 + float(rawPercentage) * 0.1;
 			}
 			snprintf(batteryText, sizeof(batteryText), "%3.0f%%", batteryPercentage);
 
@@ -65,83 +110,114 @@ void calculateBatteryPercentage() {
 	}
 }
 
+void updateBatteryVoltage() {
+	digitalWrite(VBAT_SENSE_EN, HIGH);
+
+	uint32_t sum = 0;
+	for (int i = 0; i < 10; i++) {
+		vTaskDelay(1 / portTICK_PERIOD_MS);
+		sum += analogReadMilliVolts(VBAT_SENSE) * VBAT_SENSE_SCALE;
+	}
+
+	digitalWrite(VBAT_SENSE_EN, LOW);
+	batteryMilliVolts = sum / 10;
+
+	charging = digitalRead(VUSB_MON);
+
+	if (deviceState == UI_MODE) {
+		calculateBatteryPercentage();
+	}
+
+	ESP_LOGV("Battery", "%imV", batteryMilliVolts);
+}
+
 void batteryTask(void *parameter) {
+	while (true) {
+		vTaskDelay(10000 / portTICK_PERIOD_MS);
+		updateBatteryVoltage();
+	}
+}
+
+void setup() {
 	pinMode(VUSB_MON, INPUT);
 	pinMode(VBAT_SENSE_EN, OUTPUT);
 	pinMode(VBAT_SENSE, INPUT);
 
-	while (true) {
-		TickType_t xLastWakeTime = xTaskGetTickCount();
+	updateBatteryVoltage();
 
-		digitalWrite(VBAT_SENSE_EN, HIGH);
-		vTaskDelay(100 / portTICK_PERIOD_MS);
-		batteryMilliVolts = analogReadMilliVolts(VBAT_SENSE) * VBAT_SENSE_SCALE;
-		digitalWrite(VBAT_SENSE_EN, LOW);
-		charging = digitalRead(VUSB_MON);
-
-		calculateBatteryPercentage();
-
-		xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(10000));
+	if (batteryMilliVolts > MINIMUM_BATTERY) {
+		deviceState == STARTUP;
+		Serial.begin();
+	} else {
+		enterDeepSleep();
 	}
 }
 
-enum DeviceStates : uint8_t { STARTUP, UI_MODE, GPS_SYNC_MODE, ENTER_DEEPSLEEP };
-DeviceStates deviceState = STARTUP;
-
-void setup() { Serial.begin(); }
-
 void loop() {
-	TickType_t xLastWakeTime = xTaskGetTickCount();
+	TickType_t deviceStateWakeTime = xTaskGetTickCount();
 	switch (deviceState) {
-	case STARTUP:
-		ESP_LOGI("State Machine", "STARTUP");
-		pinMode(OUTPUT_EN, OUTPUT);
-		digitalWrite(OUTPUT_EN, HIGH);
-		xTaskCreate(gpsTask, "gpsTask", 10000, NULL, 1, NULL);
-		xTaskCreate(batteryTask, "batteryTask", 2000, NULL, 2, NULL);
-		xTaskCreate(guiTask, "guiTask", 10000, NULL, 2, NULL);
-		xTaskCreate(sensorTask, "sensorTask", 10000, NULL, 3, NULL);
-		xTaskCreate(usbTask, "usbTask", 10000, NULL, 1, NULL);
-		setupButtons();
+		case STARTUP:
+			ESP_LOGI("State Machine", "STARTUP");
+			pinMode(OUTPUT_EN, OUTPUT);
+			digitalWrite(OUTPUT_EN, HIGH);
+			xTaskCreate(gpsTask, "gpsTask", 10000, NULL, 1, NULL);
+			xTaskCreate(batteryTask, "batteryTask", 2000, NULL, 2, NULL);
+			xTaskCreate(guiTask, "guiTask", 10000, NULL, 1, &guiTaskHandle);
+			xTaskCreate(sensorTask, "sensorTask", 10000, NULL, 3, &sensorTaskHandle);
+			xTaskCreate(usbTask, "usbTask", 10000, NULL, 2, NULL);
 
-		if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
-			deviceState = GPS_SYNC_MODE;
-			gpsHDOPThreshold = 1.5;
-		} else {
-			deviceState = UI_MODE;
-			gpsHDOPThreshold = 0.8;
-		}
-		break;
+			if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
+				deviceState = LIGHT_SLEEP;
+				gpsHDOPThreshold = 5.0;
+				vTaskSuspend(guiTaskHandle);
+				ESP_LOGI("State Machine", "LIGHT_SLEEP");
+			} else {
+				deviceState = UI_MODE;
+				gpsHDOPThreshold = 1.0;
+				buttonPressed = true;
+				ESP_LOGI("State Machine", "UI_MODE");
+			}
+			break;
 
-	case UI_MODE:
-		if (buttonPressed || charging) {
-			screenOnCountdown = SCREEN_ON_TIME;
-			buttonPressed = false;
-		} else if (screenOnCountdown <= 0) {
-			deviceState = GPS_SYNC_MODE;
-			analogWrite(BACKLIGHT, 0);
-		} else {
-			screenOnCountdown -= 1;
-			xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1000));
-		}
-		break;
+		case UI_MODE:
+			if (buttonPressed) {
+				screenOnCountdown = SCREEN_ON_TIME;
+				buttonPressed = false;
+				vTaskResume(guiTaskHandle);
+				xTaskDelayUntil(&deviceStateWakeTime, pdMS_TO_TICKS(1000));
+			} else if (screenOnCountdown <= 0) {
+				deviceState = LIGHT_SLEEP;
+				updateScreenBrightness(false);
+				vTaskSuspend(guiTaskHandle);
+			} else {
+				screenOnCountdown -= 1;
+				xTaskDelayUntil(&deviceStateWakeTime, pdMS_TO_TICKS(1000));
+			}
+			screenTime += 1;
+			break;
 
-	case GPS_SYNC_MODE:
-		if (buttonPressed || charging) {
-			deviceState = UI_MODE;
-			analogWrite(BACKLIGHT, BACKLIGHT_BRIGHTNESS);
-		} else if (gps.hdop.hdop() < gpsHDOPThreshold || gpsOnCountdown <= 0) {
-			deviceState = ENTER_DEEPSLEEP;
-		} else {
-			gpsOnCountdown -= 1;
-			xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1000));
-		}
-		break;
+		case LIGHT_SLEEP:
+			if (buttonPressed) {
+				deviceState = UI_MODE;
 
-	case ENTER_DEEPSLEEP:
-		digitalWrite(OUTPUT_EN, LOW);
-		ESP_LOGI("State Machine", "DEEPSLEEP");
-		enterDeepSleep(GPS_DEEPSLEEP);
-		break;
+			} else if (gps.hdop.isValid() && gps.hdop.hdop() < gpsHDOPThreshold && (millis() / 1000) > GPS_ON_TIME_MIN) {
+				deviceState = ENTER_DEEPSLEEP;
+			} else if (workingHours && (millis() / 1000) > GPS_ON_TIME_MAX_WORK_HOURS) {
+				deviceState = ENTER_DEEPSLEEP;
+			} else if (!workingHours && (millis() / 1000) > GPS_ON_TIME_MAX_OFF_HOURS) {
+				deviceState = ENTER_DEEPSLEEP;
+			} else {
+				xTaskDelayUntil(&deviceStateWakeTime, pdMS_TO_TICKS(1000));
+			}
+			lightSleepTime += 1;
+			break;
+
+		case ENTER_DEEPSLEEP:
+			saveAnalyticsToFile(batteryMilliVolts, screenTime, lightSleepTime);
+			digitalWrite(OUTPUT_EN, LOW);
+			ESP_LOGI("State Machine", "DEEPSLEEP");
+			enterDeepSleep(GPS_DEEPSLEEP_SECONDS);
+			break;
 	}
+	vTaskDelay(100 / portTICK_PERIOD_MS);
 }

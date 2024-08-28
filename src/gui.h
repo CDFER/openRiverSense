@@ -9,22 +9,32 @@
 #include "gpsOn.h"
 
 RTC_DATA_ATTR static char batteryText[6] = "100%";
+extern RTC_DATA_ATTR uint16_t batteryMilliVolts;
+extern RTC_DATA_ATTR float averageGPSTimeToLocationFixSeconds;
+// extern CalibratedSensor pH;
+// extern CalibratedSensor orp;
+// extern CalibratedSensor tds;
 
 TFT_eSPI screen;
 TFT_eSprite topGui = TFT_eSprite(&screen);
-TFT_eSprite menuBuffer = TFT_eSprite(&screen); //~40kb in size
+TFT_eSprite menuBuffer = TFT_eSprite(&screen);	//~40kb in size
 
 #define MENU_WIDTH 240
 #define MENU_HEIGHT 200
 #define MENU_ITEM_HEIGHT 48
-#define BACKLIGHT_BRIGHTNESS 32
+#define BACKLIGHT_VOLTAGE_mV 1400.0
 
-enum ButtonStates : uint8_t { NOT_PRESSED = 0, UP_PRESSED, DOWN_PRESSED, WAKE_PRESSED };
+enum ButtonStates : uint8_t { NOT_PRESSED = 0,
+							  UP_PRESSED,
+							  DOWN_PRESSED,
+							  WAKE_PRESSED };
 volatile ButtonStates buttonState = NOT_PRESSED;
 bool buttonPressed = false;
 uint8_t topGuiCounter = 0;
+uint8_t brightnessPWM = 0;
 
-void IRAM_ATTR buttonISR() {
+void IRAM_ATTR
+buttonISR() {
 	if (digitalRead(WAKE_BUTTON)) {
 		buttonState = WAKE_PRESSED;
 	} else if (digitalRead(UP_BUTTON)) {
@@ -40,7 +50,7 @@ void IRAM_ATTR buttonISR() {
 uint8_t menuIndex;
 
 class MyRenderer : public MenuComponentRenderer {
-public:
+  public:
 	void render(Menu const &menu) const {
 		menuBuffer.fillSprite(TFT_BLACK);
 
@@ -92,8 +102,22 @@ public:
 };
 MyRenderer menuRenderer;
 
+void updateScreenBrightness(bool screenOn = true) {
+	float newBrightnessPWM;
+	if (screenOn && 5000 > batteryMilliVolts > 0) {
+		newBrightnessPWM = ((float)BACKLIGHT_VOLTAGE_mV / (float)batteryMilliVolts) * 255.0;
+	} else {
+		newBrightnessPWM = 0;
+	}
+
+	if (brightnessPWM != (uint8_t)newBrightnessPWM) {
+		brightnessPWM = (uint8_t)newBrightnessPWM;
+		analogWrite(BACKLIGHT, brightnessPWM);
+	}
+}
+
 void drawTopGui() {
-	if (topGuiCounter == 0) {
+	if (topGuiCounter <= 0) {
 		topGui.fillSprite(TFT_BLACK);
 		topGui.setTextDatum(CL_DATUM);
 
@@ -114,6 +138,7 @@ void drawTopGui() {
 		}
 
 		topGui.pushSprite(40, 10);
+		updateScreenBrightness();
 		topGuiCounter = 20;
 	} else {
 		topGuiCounter--;
@@ -127,7 +152,7 @@ void setupMenuBuffer() {
 }
 
 void waitForButtonPress() {
-	vTaskDelay(100 / portTICK_PERIOD_MS);
+	vTaskDelay(200 / portTICK_PERIOD_MS);
 	buttonState = NOT_PRESSED;
 	while (buttonState == NOT_PRESSED) {
 		drawTopGui();
@@ -167,6 +192,7 @@ bool drawSpinner(uint16_t totalTimeSeconds) {
 		xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(33));
 	}
 	menuBuffer.setTextColor(TFT_WHITE, TFT_WHITE, false);
+	menuBuffer.unloadFont();
 
 	return buttonState == NOT_PRESSED;
 }
@@ -174,13 +200,12 @@ bool drawSpinner(uint16_t totalTimeSeconds) {
 void drawGPSView() {
 	menuBuffer.printf("%02d-%02d-%02d %02d:%02d\n", gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(),
 					  gps.time.minute());
-	menuBuffer.printf("%0.6f\n", gps.location.lat());
-	menuBuffer.printf("%0.6f\n", gps.location.lng());
+	menuBuffer.printf("%0.4f,%0.4f\n", gps.location.lat(), gps.location.lng());
 	menuBuffer.printf("HDOP %0.1f\n", gps.hdop.hdop());
-	menuBuffer.printf("Tracked Sats %i\n", gps.satellitesTracked.value());
-	menuBuffer.printf("Visible Sats %i\n", gps.satellites.value());
-	menuBuffer.printf("TTFF %ims\n", gps.timeToFirstFix());
-	menuBuffer.printf("Chars: %i\n", gps.charsProcessed());
+	menuBuffer.printf("Sat Track:%i View:%i\n", gps.satellitesTracked.value(), gps.satellites.value());
+	menuBuffer.printf("Current TTFF %iS\n", gps.timeToFirstFix() / 1000);
+	menuBuffer.printf("Average TTFF: %0.1fS\n", averageGPSTimeToLocationFixSeconds);
+	menuBuffer.printf("Serial: %i\n", gps.charsProcessed());
 }
 
 void drawSatelliteView() {
@@ -214,15 +239,38 @@ void drawDeviceInfo() {
 	menuBuffer.setTextColor(TFT_WHITE);
 	menuBuffer.println("FLASH");
 	menuBuffer.setTextColor(TFT_LIGHTGREY);
-	menuBuffer.printf("   Size: %.0f MB\n", static_cast<float>(ESP.getFlashChipSize()) / (1024.0 * 1024.0));
-	menuBuffer.printf("   Speed: %.0f MHz\n", static_cast<float>(ESP.getFlashChipSpeed()) / (1000.0 * 1000.0));
+	menuBuffer.printf("   Size: %.0fMiB@%.0fMHz\n", static_cast<float>(ESP.getFlashChipSize()) / (1024.0 * 1024.0), static_cast<float>(ESP.getFlashChipSpeed()) / (1000.0 * 1000.0));
 	menuBuffer.setTextColor(TFT_WHITE);
 	menuBuffer.println("FATFS");
 	menuBuffer.setTextColor(TFT_LIGHTGREY);
 	menuBuffer.printf("   Size: %.0f KB\n", static_cast<float>(flash.size()) / 1024.0);
-	menuBuffer.printf("   Free: %.0f%%\n",
-					  static_cast<float>(fatfs.freeClusterCount()) / static_cast<float>(fatfs.clusterCount()) * 100.0);
+	menuBuffer.printf("   Used: %.0f%%\n", 100.0 - (static_cast<float>(fatfs.freeClusterCount()) / static_cast<float>(fatfs.clusterCount()) * 100.0));
 	menuBuffer.setTextColor(TFT_WHITE);
+	menuBuffer.printf("%s\n", ENV);
+}
+
+void drawBatteryInfo() {
+	menuBuffer.printf("Battery: %imV\n", batteryMilliVolts);
+}
+
+void drawSensors() {
+	menuBuffer.printf("pH: %0.1f > %0.2f\n", pH.raw, pH.value);
+	menuBuffer.printf("ORP: %0.1f > %0.1f\n", orp.raw, orp.value);
+	menuBuffer.printf("TDS: %0.1f > %0.1f\n", tds.raw, tds.value);
+	menuBuffer.println();
+
+	double pHparameters[2];
+	pHRegression.parameters(pHparameters);
+
+	double ORPparameters[2];
+	orpRegression.parameters(ORPparameters);
+
+	double TDSparameters[2];
+	tdsRegression.parameters(TDSparameters);
+
+	menuBuffer.printf("pH: Y=%0.3fX+%0.2f\n", pHparameters[0], pHparameters[1]);
+	menuBuffer.printf("ORP: Y=%0.3fX+%0.2f\n", ORPparameters[0], ORPparameters[1]);
+	menuBuffer.printf("TDS: Y=%0.3fe^(%0.3fX)\n", TDSparameters[0], TDSparameters[1]);
 }
 
 void onPageView(MenuComponent *p_menu_component) {
@@ -234,11 +282,15 @@ void onPageView(MenuComponent *p_menu_component) {
 	} else if (strcmp(_name, "Satellites") == 0) {
 		drawFunction = drawSatelliteView;
 	} else if (strcmp(_name, "Device Info") == 0) {
-		setupMenuBuffer();
-		drawDeviceInfo();
-		menuBuffer.pushSprite(20, 40);
+		drawFunction = drawDeviceInfo;
+	} else if (strcmp(_name, "Sensors") == 0) {
+		drawFunction = drawSensors;
+		vTaskResume(sensorTaskHandle);
+	} else if (strcmp(_name, "Battery") == 0) {
+		drawFunction = drawBatteryInfo;
 	}
 
+	vTaskDelay(200 / portTICK_PERIOD_MS);
 	buttonState = NOT_PRESSED;
 	while (buttonState == NOT_PRESSED) {
 
@@ -248,8 +300,9 @@ void onPageView(MenuComponent *p_menu_component) {
 			menuBuffer.pushSprite(20, 40);
 		}
 		drawTopGui();
-		vTaskDelay(50 / portTICK_PERIOD_MS);
+		vTaskDelay(100 / portTICK_PERIOD_MS);
 	}
+	vTaskSuspend(sensorTaskHandle);
 }
 
 void menuItemSelected(MenuComponent *p_menu_component) {
@@ -288,10 +341,10 @@ void drawRecord(bool saveToFile) {
 
 void onRecord(MenuComponent *p_menu_component) {
 	bool saveToFile = true;
+	vTaskResume(sensorTaskHandle);
 
-	sensorProbeOn = true;
 	if (drawSpinner(10)) {
-		sensorProbeOn = false;
+		vTaskSuspend(sensorTaskHandle);
 		do {
 			drawRecord(saveToFile);
 			waitForButtonPress();
@@ -306,15 +359,14 @@ void onRecord(MenuComponent *p_menu_component) {
 		if (saveToFile) {
 			saveRecordToFile();
 		}
-
-	} else {
-		sensorProbeOn = false;
 	}
+	vTaskSuspend(sensorTaskHandle);
 }
 
 void onCalibrate(MenuComponent *p_menu_component) {
 	const char *_name = p_menu_component->get_name();
 	bool chooseCalibrate = false;
+	vTaskResume(sensorTaskHandle);
 
 	do {
 		drawCalibrationPrep(_name, chooseCalibrate);
@@ -328,9 +380,7 @@ void onCalibrate(MenuComponent *p_menu_component) {
 	} while (buttonState != WAKE_PRESSED);
 
 	if (chooseCalibrate == true) {
-		sensorProbeOn = true;
-		if (drawSpinner(10)) {
-			sensorProbeOn = false;
+		if (drawSpinner(30)) {
 			if (strcmp(_name, "pH 9.2") == 0) {
 				pH.setCurrentCalibrationPoint(0, 9.23);
 			} else if (strcmp(_name, "pH 6.9") == 0) {
@@ -342,16 +392,15 @@ void onCalibrate(MenuComponent *p_menu_component) {
 				orp.setCalibrationPoint(0, 0, 0);
 				orp.setCurrentCalibrationPoint(1, 256);
 
-			} else if (strcmp(_name, "0g/L NaCl") == 0) {
-				tds.setCurrentCalibrationPoint(0, 0);
+			} else if (strcmp(_name, ".2g/L NaCl") == 0) {
+				tds.setCurrentCalibrationPoint(0, 410);
 			} else if (strcmp(_name, ".5g/L NaCl") == 0) {
 				tds.setCurrentCalibrationPoint(1, 1008);
 			} else if (strcmp(_name, "1g/L NaCl") == 0) {
 				tds.setCurrentCalibrationPoint(2, 1990);
 			}
-		} else {
-			sensorProbeOn = false;
 		}
+		vTaskSuspend(sensorTaskHandle);
 	}
 }
 
@@ -372,19 +421,22 @@ MenuItem orp256("256mV", "\ue3c9", &onCalibrate);
 BackMenuItem orpBack("Back", "\ue5c4", NULL, &rootMenu);
 
 Menu tdsCalibrate("TDS", "\uf876");
-MenuItem tds0("0g/L NaCl", "\ue3c9", &onCalibrate);
+MenuItem tds0(".2g/L NaCl", "\ue3c9", &onCalibrate);
 MenuItem tds500(".5g/L NaCl", "\ue3c9", &onCalibrate);
 MenuItem tds1000("1g/L NaCl", "\ue3c9", &onCalibrate);
 BackMenuItem tdsBack("Back", "\ue5c4", NULL, &rootMenu);
 
 Menu settingsMenu("Settings", "\ue8b8");
 MenuItem deviceInfo("Device Info", "\ue88e", &onPageView);
-NumericMenuItem num("Float", "\ue3c9", nullptr, 1.0, 0.1, 10.0, 0.1);
+//	NumericMenuItem(const char *name, const char *icon, SelectFnPtr select_fn, float value, float min_value, float max_value, float increment = 1.0, FormatValueFnPtr format_value_fn = nullptr);
+NumericMenuItem num("Brightness", "\ue3c9", nullptr, 80.0, 10.0, 100.0, 1.0);
+MenuItem batteryInfo("Battery", "\ue206", &onPageView);
 BackMenuItem settingsMenuBack("Back", "\ue5c4", NULL, &rootMenu);
 
 Menu debugMenu("Debug", "\ueb8e");
 MenuItem gpsStats("GPS", "\ue0c8", &onPageView);
 MenuItem satellites("Satellites", "\ue0c8", &onPageView);
+MenuItem sensors("Sensors", "\ueb8e", &onPageView);
 BackMenuItem debugMenuBack("Back", "\ue5c4", NULL, &rootMenu);
 
 void setupMenu() {
@@ -413,11 +465,13 @@ void setupMenu() {
 	rootMenu.get_root_menu().add_menu(&settingsMenu);
 	settingsMenu.add_item(&deviceInfo);
 	settingsMenu.add_item(&num);
+	settingsMenu.add_item(&batteryInfo);
 	settingsMenu.add_item(&settingsMenuBack);
 
 	rootMenu.get_root_menu().add_menu(&debugMenu);
 	debugMenu.add_item(&gpsStats);
 	debugMenu.add_item(&satellites);
+	debugMenu.add_item(&sensors);
 	debugMenu.add_item(&debugMenuBack);
 
 	rootMenu.display();
@@ -439,6 +493,8 @@ void guiTask(void *parameter) {
 	digitalWrite(SPI_EN, HIGH);
 #endif
 
+	setupButtons();
+
 	screen.init();
 	screen.setRotation(1);
 	screen.fillScreen(TFT_BLACK);
@@ -454,23 +510,40 @@ void guiTask(void *parameter) {
 
 	setupMenu();
 
+	rootMenu.display();
+
 	pinMode(BACKLIGHT, OUTPUT);
-	analogWriteFrequency(40000);
-	analogWrite(BACKLIGHT, BACKLIGHT_BRIGHTNESS);
+	analogWriteFrequency(10000);
+	updateScreenBrightness();
+
+	// if (batteryMilliVolts < 3350) {
+	// 	setupMenuBuffer();
+	// 	menuBuffer.setTextDatum(MC_DATUM);
+	// 	menuBuffer.drawSmoothRoundRect(20, 20, 20, 21, MENU_WIDTH - 40, MENU_HEIGHT - 40, TFT_RED, TFT_BLACK);
+	// 	menuBuffer.drawString("0% Battery", MENU_WIDTH / 2, MENU_HEIGHT / 2);
+	// 	menuBuffer.pushSprite(20, 40);
+
+	// 	while (true) {
+	// 		drawTopGui();
+	// 		vTaskDelay(1000 / portTICK_PERIOD_MS);
+	// 	}
+
+	// } else {
 
 	while (true) {
+		rootMenu.display();
 		waitForButtonPress();
 		switch (buttonState) {
-		case WAKE_PRESSED:
-			rootMenu.select();
-			break;
-		case UP_PRESSED:
-			rootMenu.prev();
-			break;
-		case DOWN_PRESSED:
-			rootMenu.next();
-			break;
+			case WAKE_PRESSED:
+				rootMenu.select();
+				break;
+			case UP_PRESSED:
+				rootMenu.prev();
+				break;
+			case DOWN_PRESSED:
+				rootMenu.next();
+				break;
 		}
-		rootMenu.display();
 	}
+	// }
 }
